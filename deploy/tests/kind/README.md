@@ -1,14 +1,18 @@
 # The kind end-to-end test
 
-`run.sh` installs the hub chart and the database chart on a kind cluster of one control plane and three workers, with CloudNativePG, and
-checks S6 on the running database and P11 on the hub (plan 09, acceptance 3). It builds nothing: it takes the hub image that `images.yml`
-built and scanned. CI runs it as the `kind-e2e` job of `images.yml`; locally, `just kind-e2e` (it needs Docker on a cgroup v2 host, kind,
-helm and crane at the versions of the Justfile).
+`run.sh` installs the database chart and the hub chart on a kind cluster of one control plane and three workers, with CloudNativePG, checks
+S6 on the running database, and asserts what the **production** hub image can do in kind (plan 09, acceptance 3; see "Where the hub stage
+stands"). It builds nothing: it takes the hub image that `images.yml` built and scanned. CI runs it as the `kind-e2e` job of `images.yml`;
+locally, `just kind-e2e` (it needs Docker on a cgroup v2 host, kind, helm and crane at the versions of the Justfile).
+
+**What it does not measure, and says so in every summary: `/readyz` on 3 replicas and P11 on the pod are NOT MEASURED in kind (the production
+image cannot be Ready without Google and Entra), acceptance 3 is not met by this job.** The sentence is `KIND_NOT_MEASURED` in `lib.sh`; `run.sh`
+puts it in the summary and the workflow appends it to the job summary. Nothing in this repository ticks acceptance 3 because this job is green.
 
 | File | What it is |
 |---|---|
 | `run.sh` | the test: stages `registry`, `cluster`, `hub image`, `operator`, `database`, `s6`, `hub`, each timed; the first failure stops it with the stage named. `--registry-only` runs `registry` and `hub image` without a cluster |
-| `lib.sh` | what needs no cluster, so that `.github/scripts/kind-run.test.mjs` can test it: the P11 verdict, the registry helpers (`wait_for_http`, `registry_report`, `registry_container_ip`) and the verdict on the hub replicas (`hub_log_usable`, `hub_replica_class`, `hub_verdict`) |
+| `lib.sh` | what needs no cluster, so that `.github/scripts/kind-run.test.mjs` can test it: the P11 verdict, the registry helpers (`wait_for_http`, `registry_report`, `registry_container_ip`), the verdict on the hub replicas (`hub_log_usable`, `hub_replica_class`, `hub_verdict`) and, in one block, every string it looks for in a hub log (`HUB_*_MARKERS`) |
 | `registry-test.sh` | `run.sh --registry-only` and the registry helpers against a real registry container, crane and Docker (`just kind-registry-test`, part of `verify-09`, run by the `policies and scripts` job) |
 | `pins.env` | what the test installs, each pin read from a registry or a release (never guessed) and at least 14 days old |
 
@@ -41,35 +45,75 @@ plane only, and the workers were still `NotReady` when the first run printed the
 
 ## Where the hub stage stands
 
-- **A1.** `crates/hub/src/main.rs` exits 1 by design until the identity module (03a) and the registry (05) are composed into the binary, so
-  the three replicas start, refuse and crash, and the `hub` stage fails with that reason. It fakes nothing, and the summary says **P11 NOT MEASURED**.
-  The verdict is made from what is retrieved, replica by replica (`collect_replica` in `run.sh`, `hub_verdict` in `lib.sh`). Each replica's log is asked
-  for, from its current and its previous container, for up to `LK_KIND_LOG_WAIT` seconds (30), because the kubelet may not have it yet or may have
-  removed the container, and `kubectl logs` then answers with exit 0 and the sentence `unable to retrieve container logs for containerd://...` in place
-  of a log (the third run: that sentence was taken for the log of one replica, and the stage said that 2 of 3 replicas refused and that the chart, the
-  database or the cluster was at fault: wrong). Each replica's state (restart count, ready, waiting reason, exit code, started, finished) is printed.
-  A replica counts as an A1 refusal only if a retrieved log holds the exact text of `main.rs`, never from its state. The stage is red in every case:
-  **all 3 refused**: the A1 verdict; **some refused and the rest have no log but ended with exit 1 and were never Ready**: "A1 seen in the logs of N of
-  3 replicas; no log could be retrieved for ...; A1 is not claimed for it"; **a log with another error**: that error, verbatim, as the failure ("not
-  A1"); **a replica without a log whose state is not a crashed hub's** (waiting to pull, still starting, another exit code): its state, "not explained
-  by A1"; **no log at all**: nothing is claimed. It never says that the chart, the database or the cluster is at fault.
+**The decision (2026-10-28).** The production hub cannot become Ready in kind: at start it reads the web certificate and both CA certificates from
+Secret Manager, signs with Cloud KMS (both CAs), and signs users in with Entra, and kind has none of them. That is by design (prompt 18, G23: no
+fake in a release build, no `hub_dev` in the image, no setting that points the image at a stub). So the `hub` stage asserts what that image can
+do, and nothing else is claimed:
+
+1. **The migration Job completes** (`hub migrate`, exit 0) against the CloudNativePG database: TLS 1.3 with the server verified against the mounted
+   `lanekeeper-db-ca`, the `uri` key of `lanekeeper-db-migrator`, the extensions, all migrations. It is a Helm pre-install hook, so
+   `helm upgrade --install` waits for it (`--timeout`, `LK_KIND_JOBS_TIMEOUT`, 300 s) and fails when it fails; `run.sh` then waits with a bounded
+   `kubectl wait --for=condition=complete` and checks `.status.succeeded`, and prints the Job's state and log when it did not.
+2. **The seed Job completes** (`hub seed`, as `lanekeeper_app`, from the synthetic file of `deploy/values/hub/kind.yaml`). It is found by its labels
+   (its name is a hash) and waited for the same way.
+3. **Each of the 3 replicas reaches its own refusal at the first Google step**, which is what the log and the exit code show:
+   - the container ended with **exit code 1**, never 2: the 25 required settings were read and accepted (`settings.require_serving()` runs first,
+     and a refused setting is exit 2);
+   - its log holds the hub's typed start error for a **Google** component: `the web certificate could not be loaded (LK_WEB_CERT_REF,
+     LK_WEB_KEY_REF)`, a CA whose certificate secret could not be read or whose set-up took too long, or `starting took too long: web certificate`.
+     kind has no metadata server, so the read may fail or run to `LK_START_TIMEOUT_SECS` (8 s); both are Google's, and either is accepted;
+   - its log holds **no setting error** (a line `hub: ...`, or exit 2), **no database error** and **no schema error**. The database and the schema
+     checks run in parallel with the Google reads and each runs to its end, and every failure is logged (`load` in `crates/hub/src/process.rs`), so a
+     log that has only a Google error shows that the hub reached the database over TLS with full verification, as `lanekeeper_app`, and that the
+     schema the Job made is the one the hub expects.
+
+**Every other state fails the stage, and the failure says what was seen** (`hub_replica_class` in `lib.sh`; `kind-run.test.mjs` runs the real
+`run.sh` against a stand-in kubectl for each):
+
+| Class | What it is | Result |
+|---|---|---|
+| `google` | the above, on all 3 replicas | pass |
+| `setting` | exit code 2, or a line `hub: ...` (a setting or the command line was refused, or the process stopped before its start) | fail, the line quoted |
+| `schema` | `the database schema is not usable`: the migration did not run, or not against this database | fail |
+| `database` | `the database is not usable`, or `starting took too long: database` | fail |
+| `ready` | a pod is Ready. The production image cannot be, in kind: an unexpected state for a person to read (P11 is measured and printed if all 3 are) | fail |
+| `wrong-exit` | a Google error in the log and an exit code that is not 1 (or none: the container has not ended) | fail |
+| `unknown` | a usable log with none of the errors above: printed in full | fail |
+| `unlogged` | no log could be retrieved in `LK_KIND_LOG_WAIT` seconds (30); its state is printed. Nothing is asserted without a log | fail |
+
+A failure beside a Google error is the failure (the order is setting, schema, database, Google). Each replica's log is that of its current and its
+previous container, whichever are usable: `kubectl logs` answers with exit 0 and the sentence `unable to retrieve container logs for
+containerd://...` in place of a log when the kubelet has removed the container (the third run took that sentence for a log), and `hub_log_usable`
+refuses it. Each replica's state (restart count, ready, waiting reason, exit code, started, finished) is printed.
+
+**The one place that couples the script to prompt 18's wording** is the block of `HUB_*_MARKERS` in `lib.sh`. Each marker is a literal of the
+non-test Rust source of `crates/hub/src` (the `Display` of `StartError`, `CaStep` and `PlatformError`), looked for with `grep -F`.
+`kind-run.test.mjs` reads that source, extracts its string literals (leaving out comments and `#[cfg(test)]` modules) and fails when a marker is
+no longer one, so a reworded message turns this job red in the pull request that rewords it. It also fails when `lib.sh` gains a marker the test
+has no anchor for.
+
+**Not run.** The stage itself has not run: the sandbox where it was written has no Docker daemon and a cgroup v1 kernel (kind's node image refuses
+it). What was shown is the script against stand-ins (`.github/scripts/kind-run.test.mjs`: the real `run.sh` and `lib.sh` with a fake docker, kind, helm,
+curl and crane, so a fake kubectl behind `docker exec`), `shellcheck -x`, `bash -n` and `actionlint`. The exact text of the first Google error in
+kind (a failed read, or `starting took too long: web certificate`) is a guess from the code until a runner has shown it; the markers accept both.
+
 - **Readiness.** A pod's `Ready` condition is the answer of `/readyz` on the operations port, as the kubelet's readinessProbe sees it. The
   test does not ask the port again from outside the pod: the hub chart's NetworkPolicy admits 9090 only from the monitoring namespace and
-  Google's ranges, so a request through the API server's pod proxy would be refused by the very policy the chart ships.
-- **P11.** Once all three replicas are Ready, each must be Ready within **10 s** of its container's start (`perf/budgets.toml` `P11`, 10000 ms;
-  `p11_verdict` in `lib.sh`). The number includes the probes' own timing, not only the hub's start: the kubelet runs no readinessProbe until the
-  startupProbe has succeeded, so the time to Ready can hold up to the startupProbe's period (2 s, `deploy/charts/hub/templates/statefulset.yaml:96-100`)
-  and then up to the readinessProbe's (5 s, the same file, lines 106 to 108), and the API's one-second timestamps: up to about 7 s of the 10 s in the
-  worst case, from the periods and not measured (the hub has never started in this test). A replica that passes started within the budget; **a red P11 on kind may be
-  probe overhead, so read it against those periods before reading it as a slow start.** The budget is the design scale's, and kind's CPUs and disks are not: a miss is a finding to read, not
-  a flake to retry.
+  Google's ranges, so a request through the API server's pod proxy would be refused by the very policy the chart ships. No replica is Ready here, so
+  `/readyz` is not measured.
+- **P11.** `perf/budgets.toml` `P11` is 10000 ms per replica. The hub's start-up with software edges is measured by the benchmark `hub/startup`
+  (`cargo xtask bench-check`); what a cluster adds is probe timing and real Google latency, and kind cannot show either. `p11_verdict` in `lib.sh`
+  is used only in the `ready` class above. If it ever runs, the number includes the probes' own timing (the startupProbe's period of 2 s,
+  `deploy/charts/hub/templates/statefulset.yaml:96-100`, then the readinessProbe's 5 s, lines 106 to 108, and the API's one-second timestamps: up
+  to about 7 s of the 10 s in the worst case, from the periods), so a miss is read against those before it is read as a slow start.
 - **Proven on a runner (run 40374410436):** the stages `registry`, `cluster`, `hub image`, `operator`, `database` and `s6` pass. The `s6` stage checked what
   the plan says: a TLS connection works and is TLSv1.3 (the positive control), `psql sslmode=disable` is refused with `pg_hba.conf rejects connection for
   host ..., no encryption` (the chart's `hostnossl ... reject`, not a missing entry or a wrong password), and a client that offers TLS 1.2 at most is
   refused with `SSL error: tlsv1 alert protocol version`; then `vector` and `pg_trgm` and the collation. The `database` stage took 97 s of the 900 s that
   `LK_KIND_DB_TIMEOUT` allows (three instances, with their image pulled), so a runner several times slower still fits.
-- **Unproven.** That the CNI of kind (kindnet) enforces the hub's NetworkPolicy, and that the kubelet's probes are not filtered by it; the hub stage past A1
-  and P11 (the hub does not start yet).
+- **Unproven.** The `hub` stage as written (above: it has not run); that the CNI of kind (kindnet) enforces the hub's NetworkPolicy, and that the
+  kubelet's probes are not filtered by it; `/readyz` on 3 replicas, P11 on the pod, the PodDisruptionBudget, a rolling update, the SIGTERM drain,
+  Workload Identity, the Gateway and Cloud Armor (none is possible in kind with this image).
 
 ## The pins, and who moves them
 

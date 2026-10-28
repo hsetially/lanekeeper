@@ -74,10 +74,37 @@ test('run.sh asserts P11 per replica once they are Ready, and says so when it co
   assert.match(run, /NOT MEASURED/);
 });
 
-test('the A1 failure path is unchanged: the refusal is named, nothing is faked', () => {
-  assert.match(run, /THE HUB REFUSES TO START, ON PURPOSE \(plan 09 A1\)/);
-  assert.match(run, /fail_reason="A1: the hub binary exits 1 by design until it is composed \(03a and 05\); the replicas started and refused"/);
-  assert.match(readFileSync(libSh0, 'utf8'), /\[ "\$refused" -eq 3 \]/, 'all three replicas must have refused for the A1 verdict (lib.sh hub_verdict)');
+// The production hub cannot become Ready in kind (it needs real Google and Entra, by design: prompt 18, G23), so what this job proves is not
+// what its first version meant to prove. The job says so in one sentence, kept in lib.sh and printed by run.sh and by the workflow.
+test('lib.sh holds the one sentence that says what the kind job does not measure, and run.sh and images.yml print that one', () => {
+  const lib = readFileSync(libSh0, 'utf8');
+  const sentence = /^KIND_NOT_MEASURED='([^']+)'$/m.exec(lib)?.[1];
+  assert.ok(sentence, 'lib.sh has no KIND_NOT_MEASURED');
+  for (const part of ['/readyz on 3 replicas', 'P11 on the pod', 'NOT MEASURED', 'cannot be Ready without Google and Entra', 'acceptance 3 is not met by this job']) {
+    assert.ok(sentence.includes(part), `the sentence lacks "${part}": ${sentence}`);
+  }
+  assert.match(run, /\$KIND_NOT_MEASURED/, 'run.sh does not print it');
+  const workflow = readFileSync(join(root, '.github', 'workflows', 'images.yml'), 'utf8');
+  const job = /^ {2}kind-e2e:\n([\s\S]*?)(?=^ {2}[a-z][a-z0-9-]*:\n)/m.exec(workflow)?.[1] ?? '';
+  assert.ok(job, 'images.yml has no kind-e2e job');
+  assert.match(job, /- name: [^\n]+\n\s+if: always\(\)\n\s+run: \|\n\s+\. deploy\/tests\/kind\/lib\.sh\n\s+printf '%s\\n' "\$KIND_NOT_MEASURED" >> "\$GITHUB_STEP_SUMMARY"/,
+    'the kind-e2e job has no step that always appends the sentence to the job summary');
+});
+
+test('nothing in the kind test, its README, the workflow or the Justfile still describes the refusal of the old stub (plan 09 A1)', () => {
+  const texts = {
+    'run.sh': run,
+    'lib.sh': readFileSync(libSh0, 'utf8'),
+    'README.md': readFileSync(join(root, 'deploy', 'tests', 'kind', 'README.md'), 'utf8'),
+    'images.yml': readFileSync(join(root, '.github', 'workflows', 'images.yml'), 'utf8'),
+    Justfile: readFileSync(join(root, 'Justfile'), 'utf8'),
+    'charts/hub/README.md': readFileSync(join(root, 'deploy', 'charts', 'hub', 'README.md'), 'utf8'),
+    'charts/gcp/README.md': readFileSync(join(root, 'deploy', 'charts', 'gcp', 'README.md'), 'utf8'),
+    'ADDING-A-SWIMLANE.md': readFileSync(join(root, 'deploy', 'ADDING-A-SWIMLANE.md'), 'utf8'),
+  };
+  for (const [name, text] of Object.entries(texts)) {
+    assert.doesNotMatch(text, /HUB_REFUSAL_TEXT|no identity module|THE HUB REFUSES TO START|plan 09 A1\b|\(03a and 05\)|until it is composed|a1-partial/, `${name} still describes the old refusal`);
+  }
 });
 
 // ---- the registry stage (CI first run, 2026-10-26: `hub image` failed in 0 s with "dial tcp [::1]:32768: connect: connection refused") ----
@@ -90,7 +117,7 @@ test('the A1 failure path is unchanged: the refusal is named, nothing is faked',
 // prints the container's state and log when none answers.
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { after } from 'node:test';
@@ -212,22 +239,27 @@ case "$1" in
       *"get pods -l app.kubernetes.io/name=lanekeeper-hub -o json"*) cat "$SHIM_DIR/pods.json" ;;
       *"get pods -l"*) echo "NAME READY STATUS RESTARTS" ;;
       *"get pods"*) echo '{"items":[]}' ;;
+      *"get jobs -l"*) printf '%s' "\${SHIM_SEED_JOBS-lanekeeper-hub-seed-4f2a9c1b7e}" ;;
+      *"get job lanekeeper-hub-"*) printf '%s' "\${SHIM_JOB_SUCCEEDED-1}" ;;
+      *" logs -l job-name="*) echo '{"level":"INFO","fields":{"message":"the schema is up to date","applied":8,"version":8},"target":"hub::migrate"}' ;;
       *"get pod lanekeeper-hub-"*) n="$(sed -n 's/.*get pod lanekeeper-hub-\\([0-9]\\).*/\\1/p' <<<"$*")"; cat "$SHIM_DIR/pod-$n.json" ;;
       *" logs lanekeeper-hub-"*)
         pod="$(sed -n 's/.* logs \\(lanekeeper-hub-[0-9]\\).*/\\1/p' <<<"$*")"
         n="$(cat "$SHIM_DIR/logcalls-$pod" 2>/dev/null || echo 0)"; echo $((n + 1)) > "$SHIM_DIR/logcalls-$pod"
         var="SHIM_LOGS_\${pod##*-}"; mode="\${!var:-ok}"
-        refusal='{"timestamp":"2026-10-26T18:25:00.059597Z","level":"ERROR","fields":{"message":"this build has no identity module (prompt 03a) and no registry (prompt 05) linked in; refusing to start without them"},"target":"hub"}'
         unavailable() { # what the first runner showed: exit 0 and a sentence in place of a log, for a container that the kubelet had removed
           case "$*" in *--previous*) echo "unable to retrieve container logs for containerd://f0ccf06c64bd0f461849de9c1599469ae5bd5b93d369e9a69c2a8134efce14a5"; exit 0 ;; esac
           echo "Error from server (BadRequest): container \\"hub\\" in pod \\"$pod\\" is waiting to start: CrashLoopBackOff" >&2; exit 1
         }
         case "$mode" in
-          ok) echo "$refusal" ;;
-          retry:*) if [ "$n" -lt "\${mode#retry:}" ]; then unavailable "$@"; else echo "$refusal"; fi ;;
+          ok) cat "$SHIM_DIR/log-\${pod##*-}.txt" ;;
+          retry:*) if [ "$n" -lt "\${mode#retry:}" ]; then unavailable "$@"; else cat "$SHIM_DIR/log-\${pod##*-}.txt"; fi ;;
           never) unavailable "$@" ;;
-          other:*) echo '{"timestamp":"2026-10-26T18:25:01.000000Z","level":"ERROR","fields":{"message":"'"\${mode#other:}"'"},"target":"hub"}' ;;
         esac ;;
+      *"wait --for=condition=complete job/"*)
+        job="$(sed -n 's/.*job\\/\\([^ ]*\\).*/\\1/p' <<<"$*")"
+        case "$job" in lanekeeper-hub-migrate) var=SHIM_JOB_MIGRATE ;; *) var=SHIM_JOB_SEED ;; esac
+        [ "\${!var:-complete}" = complete ] || { echo "error: timed out waiting for the condition on jobs.batch/$job" >&2; exit 1; } ;;
       *"wait --for=condition=Ready node"*) [ "\${SHIM_WAIT_EXIT:-0}" = 0 ] || { echo "error: timed out waiting for the condition on nodes/lanekeeper-e2e-worker" >&2; exit "$SHIM_WAIT_EXIT"; } ;;
       *" apply "*) cat > /dev/null ;;
       *crictl*) [ "\${SHIM_CRICTL_EXIT:-0}" = 0 ] || { echo "FATA[0000] pulling image: failed to resolve reference" >&2; exit "$SHIM_CRICTL_EXIT"; } ;;
@@ -263,12 +295,37 @@ esac
 
 /** A copy of the scripts under test in a scratch repository (so that run.sh finds no real tools in target/ops-tools/bin), the stand-ins,
  *  and a tiny image archive with its recorded digest. */
-const crashed = (restarts = 2) => ({ name: 'hub', ready: false, restartCount: restarts,
+const crashed = (restarts = 2, exitCode = 1) => ({ name: 'hub', ready: false, restartCount: restarts,
   state: { waiting: { reason: 'CrashLoopBackOff', message: 'back-off 10s restarting failed container=hub pod=lanekeeper-hub-0' } },
-  lastState: { terminated: { containerID: 'containerd://2679bc8a', exitCode: 1, reason: 'Error', startedAt: '2026-10-26T18:25:00Z', finishedAt: '2026-10-26T18:25:00Z' } } });
+  lastState: { terminated: { containerID: 'containerd://2679bc8a', exitCode, reason: 'Error', startedAt: '2026-10-28T10:00:00Z', finishedAt: '2026-10-28T10:00:09Z' } } });
 const imagePull = () => ({ name: 'hub', ready: false, restartCount: 0, state: { waiting: { reason: 'ImagePullBackOff', message: 'Back-off pulling image' } } });
+/** A replica that is Ready (the production image cannot be, in kind): started at 10:00:00, Ready after `seconds`. */
+const readyPod = (seconds) => ({ name: 'hub', ready: true, restartCount: 0, state: { running: { startedAt: '2026-10-28T10:00:00Z' } }, readyAt: `2026-10-28T10:00:${String(seconds).padStart(2, '0')}Z` });
 
-async function scene(name, env = {}, { pods = [crashed(1), crashed(2), crashed(1)] } = {}) {
+// ---- what a hub that cannot reach Google logs (one JSON object per line, as crates/hub/src/telemetry.rs writes them) ----
+// Fixtures copied from the Display of StartError, PlatformError, CaStep and WebTlsError in crates/hub/src (process.rs, wiring/mod.rs,
+// wiring/grpc.rs, web_tls.rs); the literals themselves are checked against the source below.
+const jsonLine = (level, message, extra = {}) => JSON.stringify({ timestamp: '2026-10-28T10:00:08.000000Z', level, fields: { message, ...extra }, target: 'hub::process' });
+const WEB_CERT = 'the web certificate could not be loaded (LK_WEB_CERT_REF, LK_WEB_KEY_REF): the certificate secret could not be read';
+const WEB_TIMEOUT = 'starting took too long: web certificate';
+const CA_AGENT_SECRET = 'the agent CA is not usable (LK_AGENT_CA_KMS_REF, LK_AGENT_CA_CERT_REF): the CA certificate secret could not be read: secret manager is unavailable';
+const CA_REPLICA_TIMEOUT = 'the replica CA is not usable (LK_REPLICA_CA_KMS_REF, LK_REPLICA_CA_CERT_REF): setting it up took too long';
+const DB_ERROR = 'the database is not usable: could not connect to the database';
+const DB_TIMEOUT = 'starting took too long: database';
+const SCHEMA_ERROR = 'the database schema is not usable: migration 0001 (init) has not been applied; run `hub migrate` with the migrator credential first';
+/** The log of a replica that stopped at its first Google step: the CA errors that load() logs beside it, and the error that main logs last. */
+const googleLog = (last = WEB_CERT) => [
+  jsonLine('INFO', 'starting', { version: '0.1.0' }),
+  jsonLine('ERROR', 'the hub could not start', { ca: 'replica', error: CA_REPLICA_TIMEOUT }),
+  jsonLine('ERROR', 'the hub could not start', { error: CA_AGENT_SECRET }),
+  jsonLine('ERROR', 'the hub could not start', { error: last }),
+].join('\n');
+/** The same, with one more error that is not Google's: the log of a replica whose database or schema check failed too. */
+const withError = (error, last = WEB_CERT) => [jsonLine('INFO', 'starting', { version: '0.1.0' }), jsonLine('ERROR', 'the hub could not start', { error }), jsonLine('ERROR', 'the hub could not start', { error: last })].join('\n');
+const SETTING_LOG = 'hub: LK_WEB_CERT_REF is required';
+const GOOGLE_LOGS = [googleLog(), googleLog(WEB_TIMEOUT), googleLog()];
+
+async function scene(name, env = {}, { pods = [crashed(1), crashed(2), crashed(1)], logs = GOOGLE_LOGS } = {}) {
   const dir = join(scratch, name);
   const repo = join(dir, 'repo');
   const bin = join(dir, 'bin');
@@ -288,7 +345,13 @@ async function scene(name, env = {}, { pods = [crashed(1), crashed(2), crashed(1
   const which = (await exec('bash', ['-c', 'command -v curl'])).out.trim();
   for (const [file, body] of [['docker', DOCKER], ['curl', CURL], ['crane', CRANE],
     ['kind', '#!/usr/bin/env bash\ncase "$1" in version) echo "kind v0.33.0 go1.25 linux/amd64" ;; get) printf "lanekeeper-e2e-control-plane\\nlanekeeper-e2e-worker\\nlanekeeper-e2e-worker2\\nlanekeeper-e2e-worker3\\n" ;; esac\n'],
-    ['helm', '#!/usr/bin/env bash\ncase "$1" in version) echo "v4.3.0+gbec5b06" ;; esac\n']]) {
+    ['helm', `#!/usr/bin/env bash
+echo "helm $*" >> "$SHIM_LOG"
+case "$1" in
+  version) echo "v4.3.0+gbec5b06" ;;
+  upgrade) case "$*" in *"upgrade --install lanekeeper-hub "*) [ "\${SHIM_HELM_HUB_EXIT:-0}" = 0 ] || { echo "Error: failed pre-install: 1 error occurred: * job lanekeeper-hub-migrate failed: BackoffLimitExceeded" >&2; exit "$SHIM_HELM_HUB_EXIT"; } ;; esac ;;
+esac
+`]]) {
     writeFileSync(join(bin, file), body);
     chmodSync(join(bin, file), 0o755);
   }
@@ -300,15 +363,17 @@ async function scene(name, env = {}, { pods = [crashed(1), crashed(2), crashed(1
   writeFileSync(join(dir, 'cnpg.yaml'), manifest);
   appendFileSync(pinsFile, `LK_CNPG_MANIFEST_URL=file://${join(dir, 'cnpg.yaml')}\nLK_CNPG_MANIFEST_SHA256=${createHash('sha256').update(manifest).digest('hex')}\n`);
   // The hub pods as the API server shows them: one JSON document of the list, and one per pod.
-  writeFileSync(join(dir, 'pods.json'), JSON.stringify({ items: pods.map((status, i) => ({ metadata: { name: `lanekeeper-hub-${i}` }, status: { conditions: [{ type: 'Ready', status: 'False' }], containerStatuses: [status] } })) }));
-  pods.forEach((status, i) => writeFileSync(join(dir, `pod-${i}.json`), JSON.stringify({ status: { containerStatuses: [status] } })));
+  const condition = ({ ready, readyAt }) => ({ type: 'Ready', status: ready ? 'True' : 'False', ...(readyAt ? { lastTransitionTime: readyAt } : {}) });
+  writeFileSync(join(dir, 'pods.json'), JSON.stringify({ items: pods.map((status, i) => ({ metadata: { name: `lanekeeper-hub-${i}` }, status: { conditions: [condition(status)], containerStatuses: [status] } })) }));
+  pods.forEach((status, i) => writeFileSync(join(dir, `pod-${i}.json`), JSON.stringify({ status: { conditions: [condition(status)], containerStatuses: [status] } })));
+  logs.forEach((text, i) => writeFileSync(join(dir, `log-${i}.txt`), `${text}\n`));
   const { server, port } = await listen();
   const closed = await closedPort();
   const log = join(dir, 'calls.log');
   writeFileSync(log, '');
   const shimEnv = {
     PATH: `${bin}:${process.env.PATH}`, SHIM_LOG: log, SHIM_DIR: dir, SHIM_IMAGES: images, REAL_CURL: which,
-    SHIM_REGISTRY_PORT: String(port), SHIM_CLOSED_PORT: String(closed), LK_WAIT_STEP: '0.2', LK_KIND_REGISTRY_WAIT: '3', LK_KIND_LOG_WAIT: '2', LK_KIND_LOG_STEP: '0.2',
+    SHIM_REGISTRY_PORT: String(port), SHIM_CLOSED_PORT: String(closed), LK_WAIT_STEP: '0.2', LK_KIND_REGISTRY_WAIT: '3', LK_KIND_LOG_WAIT: '2', LK_KIND_LOG_STEP: '0.2', LK_KIND_POLL_STEP: '0.2', LK_KIND_HUB_TIMEOUT: '3', LK_KIND_JOBS_TIMEOUT: '30',
     LK_KIND_CONFIG_FILE: join(dir, 'kind-config.yaml'), ...env,
   };
   const runSh = (...args) => exec(join(repo, 'deploy', 'tests', 'kind', 'run.sh'), [...args, '--images-dir', images, '--out', join(dir, 'out')], { env: shimEnv });
@@ -397,73 +462,283 @@ test('with Ready nodes the run goes on to the hub image stage, which pushes, the
   assert.ok(at('wait --for=condition=Ready node') > at('network connect') && at('crane push') > at('wait --for=condition=Ready node') && at('crictl pull') > at('crane push'), calls);
 });
 
-// ---- the hub stage (CI third run, 2026-10-26, run 40374410436) ----
+// ---- the hub stage: what the PRODUCTION image can do in kind (decision of 2026-10-28) ----
 //
-// All three replicas crashed with the A1 refusal, and the script said "2 of 3 replicas ... the chart, the database connection or the cluster is
-// at fault". For lanekeeper-hub-1 `kubectl logs --previous` had answered with exit 0 and the sentence "unable to retrieve container logs for
-// containerd://...", in place of a log, for a container that the kubelet had already removed; the script took that sentence for the log and did
-// not ask again. These tests give the real run.sh a kubectl that does exactly that, for one replica, for good, and a different error for another.
-const REFUSAL = 'this build has no identity module (prompt 03a) and no registry (prompt 05) linked in; refusing to start without them';
+// The production hub cannot become Ready in kind: it needs real Google (Secret Manager, KMS) and Entra, by design (prompt 18, G23), and kind
+// has neither. So the stage passes when (1) the migration Job completes against CloudNativePG, (2) the seed Job completes, and (3) each
+// replica reaches its own refusal at the first Google step: exit code 1, the hub's typed start error for the web certificate or a CA (or the
+// start timeout of that step), and no setting error, no database error and no schema error in its log (the database and schema checks run
+// in parallel with the Google reads, crates/hub/src/process.rs `load`, and every failure is logged, so a log with only a Google error shows
+// that they passed). Every other state is a failure that names what was seen. These scenes give the real run.sh a kubectl that answers as
+// each state would; the stage itself has not run in this sandbox (no Docker daemon, cgroup v1).
+const NOT_MEASURED = /\/readyz on 3 replicas and P11 on the pod are NOT MEASURED in kind \(the production image cannot be Ready without Google and Entra\), acceptance 3 is not met by this job/;
 
-test('the refusal that run.sh looks for is the one that crates/hub/src/main.rs logs', () => {
-  assert.ok(readFileSync(join(root, 'crates', 'hub', 'src', 'main.rs'), 'utf8').includes(`"${REFUSAL}"`));
-  assert.ok(readFileSync(libSh, 'utf8').includes(`HUB_REFUSAL_TEXT='${REFUSAL}'`));
+/** The string literals of the non-test code of a Rust source: comments are left out, and so is everything from the first #[cfg(test)] on. */
+function rustLiterals(text) {
+  const end = text.indexOf('#[cfg(test)]');
+  const src = end >= 0 ? text.slice(0, end) : text;
+  const found = [];
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    const raw = c === 'r' && !/[A-Za-z0-9_]/.test(src[i - 1] ?? ' ') ? /^r(#*)"/.exec(src.slice(i, i + 12)) : null;
+    if (c === '/' && src[i + 1] === '/') {
+      while (i < src.length && src[i] !== '\n') i += 1;
+    } else if (c === '/' && src[i + 1] === '*') {
+      const e = src.indexOf('*/', i + 2);
+      i = e < 0 ? src.length : e + 2;
+    } else if (raw) {
+      const close = `"${raw[1]}`;
+      const from = i + raw[0].length;
+      const e = src.indexOf(close, from);
+      found.push(src.slice(from, e < 0 ? src.length : e));
+      i = e < 0 ? src.length : e + close.length;
+    } else if (c === '"') {
+      let lit = '';
+      i += 1;
+      while (i < src.length && src[i] !== '"') {
+        if (src[i] === '\\') {
+          if (src[i + 1] === '\n') {
+            i += 2;
+            while (/[ \t]/.test(src[i] ?? '')) i += 1;
+            continue;
+          }
+          lit += src[i + 1];
+          i += 2;
+          continue;
+        }
+        lit += src[i];
+        i += 1;
+      }
+      found.push(lit);
+      i += 1;
+    } else if (c === "'") {
+      // a character literal ('"', '\n', 'a') is skipped whole; a lifetime ('a) is just the quote
+      if (src[i + 1] === '\\') i = src.indexOf("'", i + 3) + 1 || src.length;
+      else if (src[i + 2] === "'") i += 3;
+      else i += 1;
+    } else {
+      i += 1;
+    }
+  }
+  return found;
+}
+
+function walk(dir) {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : e.name.endsWith('.rs') ? [join(dir, e.name)] : []));
+}
+
+test('rustLiterals reads string literals of the code and not comments, test modules or other text (so the coupling check below can fail)', () => {
+  const lits = rustLiterals([
+    '// "in a line comment"',
+    '/* "in a block comment" */',
+    '#[error("a typed error: {0}")]',
+    'let r = r#"raw "quoted" text"#;',
+    "let q = '\"'; let s = \"after a quote char\";",
+    'let c = "continued \\',
+    '           on the next line";',
+    "fn f<'a>(x: &'a str) -> &'a str { \"after a lifetime\" }",
+    '#[cfg(test)]',
+    'mod tests { const T: &str = "only in a test"; }',
+  ].join('\n'));
+  assert.deepEqual(lits, ['a typed error: {0}', 'raw "quoted" text', 'after a quote char', 'continued on the next line', 'after a lifetime']);
 });
 
-test('hub: logs that cannot be fetched at first, and then can, still count: A1 on 3 of 3 replicas, as designed, and P11 stays NOT MEASURED', async () => {
-  const s = await scene('hub-retry', { SHIM_LOGS_1: 'retry:3' });
+// The ONE place that couples the script to prompt 18's wording is the block of lib.sh that holds the markers. This test is the replacement for
+// the check of the old refusal text against main.rs: it fails when a string that the script looks for no longer exists in the Rust source.
+const ANCHORS = {
+  // StartError::WebCertificate: #[error("the web certificate could not be loaded (LK_WEB_CERT_REF, LK_WEB_KEY_REF): {0}")]
+  'the web certificate could not be loaded (LK_WEB_CERT_REF, LK_WEB_KEY_REF)': [['has', 'the web certificate could not be loaded (LK_WEB_CERT_REF, LK_WEB_KEY_REF)']],
+  // StartError::TimedOut: #[error("starting took too long: {0}")], and load() bounds the web certificate with the label "web certificate"
+  'starting took too long: web certificate': [['has', 'starting took too long: {0}'], ['is', 'web certificate']],
+  // CaStep::Secret and CaStep::TimedOut (wiring/grpc.rs), shown inside PlatformError::Ca: "the {} CA is not usable ({}): {step}"
+  'the CA certificate secret could not be read': [['has', 'the CA certificate secret could not be read: {0}'], ['has', ' CA is not usable (']],
+  'setting it up took too long': [['is', 'setting it up took too long'], ['has', ' CA is not usable (']],
+  // StartError::Database, StartError::TimedOut("database") (the connection and the schema check are one bounded step)
+  'the database is not usable': [['has', 'the database is not usable: {0}']],
+  'starting took too long: database': [['has', 'starting took too long: {0}'], ['is', 'database']],
+  // StartError::Schema
+  'the database schema is not usable': [['has', 'the database schema is not usable: {0}']],
+  // process.rs `say`: eprintln!("hub: {message}"), for a refused setting, the command line, telemetry, and the process before the start
+  'hub: ': [['has', 'hub: {message}']],
+};
+
+test('every string that run.sh looks for in a hub log is a literal of the Rust source of the hub (outside its tests), and every one has an anchor here', async () => {
+  const r = await lib('hub_markers');
+  assert.equal(r.code, 0, r.all);
+  const markers = r.out.split('\n').filter((l) => l !== '');
+  assert.ok(markers.length >= 8, `lib.sh lists only ${markers.length} markers: ${markers}`);
+  assert.deepEqual([...markers].sort(), Object.keys(ANCHORS).sort(), 'the markers of lib.sh and the anchors of this test differ');
+  const files = walk(join(root, 'crates', 'hub', 'src'));
+  assert.ok(files.length > 20, `only ${files.length} Rust files were found`);
+  const literals = files.flatMap((f) => rustLiterals(readFileSync(f, 'utf8')));
+  for (const [marker, anchors] of Object.entries(ANCHORS)) {
+    for (const [how, text] of anchors) {
+      const ok = how === 'is' ? literals.includes(text) : literals.some((l) => l.includes(text));
+      assert.ok(ok, `"${marker}": no ${how === 'is' ? 'string literal equal to' : 'string literal that holds'} "${text}" in crates/hub/src`);
+    }
+  }
+});
+
+test('the check can fail: the refusal text of the old stub is in no literal of the source, and a template that the markers rely on is', () => {
+  const literals = walk(join(root, 'crates', 'hub', 'src')).flatMap((f) => rustLiterals(readFileSync(f, 'utf8')));
+  assert.ok(!literals.some((l) => l.includes('no identity module')), 'the old refusal is gone from the source: a script that looked for it would fail');
+  assert.ok(literals.some((l) => l.includes('starting took too long: {0}')));
+});
+
+/** Runs the real run.sh in a scene and returns the result with the calls that the stand-ins recorded. */
+async function runScene(name, env, options) {
+  const s = await scene(name, env, options);
   const r = await s.runSh();
   s.server.close();
-  assert.equal(r.code, 1, r.all);
+  return { ...r, calls: await s.calls() };
+}
+
+test('hub: the Jobs complete and every replica stops at its first Google step: the stage passes, and says what it did not measure', async () => {
+  const r = await runScene('hub-pass', {});
+  assert.equal(r.code, 0, r.all);
   assert.match(r.all, /\| s6 \| PASS \|/);
-  assert.match(r.all, /THE HUB REFUSES TO START, ON PURPOSE \(plan 09 A1\)/);
-  assert.match(r.all, /FAILED in the stage 'hub': A1: the hub binary exits 1 by design until it is composed \(03a and 05\); the replicas started and refused/);
+  assert.match(r.all, /\| hub \| PASS \| \d+ \| [^|\n]*3 replicas[^|\n]*Google/);
+  assert.match(r.all, NOT_MEASURED);
+  assert.match(r.all, /\| \/readyz on 3 replicas \| NOT MEASURED \|/);
+  assert.match(r.all, /\| P11 hub start-up \(10 s per replica\) \| NOT MEASURED \|/);
+  assert.match(r.all, /kind-e2e: PASS/);
+  assert.doesNotMatch(r.all, /FAILED in the stage|A1/);
+  assert.match(r.all, /lanekeeper-hub-1: google/);
+});
+
+test('hub: the migration Job is waited for after helm and before the seed Job, the seed Job before the replicas are looked at, every wait bounded', async () => {
+  const r = await runScene('hub-order', {});
+  assert.equal(r.code, 0, r.all);
+  const at = (needle) => r.calls.indexOf(needle);
+  const helm = at('helm upgrade --install lanekeeper-hub ');
+  const migrate = at('wait --for=condition=complete job/lanekeeper-hub-migrate ');
+  const seed = at('wait --for=condition=complete job/lanekeeper-hub-seed-4f2a9c1b7e ');
+  const logs = at('logs lanekeeper-hub-0');
+  assert.ok(helm > 0 && migrate > helm && seed > migrate && logs > seed, r.calls);
+  for (const line of r.calls.split('\n').filter((l) => l.includes('wait --for=condition=complete'))) assert.match(line, / --timeout=\d+s$/, line);
+  assert.match(r.calls, /helm upgrade --install lanekeeper-hub .* --timeout \d+s/, 'helm waits for the pre-install hook (the migration Job), and is bounded');
+  assert.match(r.all, /the migration Job \(lanekeeper-hub-migrate\) completed/);
+  assert.match(r.all, /the seed Job \(lanekeeper-hub-seed-4f2a9c1b7e\) completed/);
+});
+
+test('hub: a replica that stopped at the CA, or at the start timeout, is a Google refusal too', async () => {
+  const r = await runScene('hub-ca', {}, { logs: [withError(CA_AGENT_SECRET, CA_REPLICA_TIMEOUT), googleLog(WEB_TIMEOUT), googleLog()] });
+  assert.equal(r.code, 0, r.all);
+  assert.match(r.all, /lanekeeper-hub-0: google/);
+  assert.match(r.all, /\| hub \| PASS \|/);
+});
+
+test('hub: logs that cannot be fetched at first, and then can, still count', async () => {
+  const r = await runScene('hub-retry', { SHIM_LOGS_1: 'retry:3' });
+  assert.equal(r.code, 0, r.all);
+  assert.match(r.all, /lanekeeper-hub-1: google/);
+});
+
+test('hub: a setting error (exit 2, a line "hub: ...") fails the stage, names the replica and quotes the line', async () => {
+  const r = await runScene('hub-setting', {}, { pods: [crashed(1), crashed(1, 2), crashed(1)], logs: [googleLog(), SETTING_LOG, googleLog()] });
+  assert.equal(r.code, 1, r.all);
+  assert.match(r.all, /FAILED in the stage 'hub': .*setting.*lanekeeper-hub-1.*hub: LK_WEB_CERT_REF is required/);
   assert.match(r.all, /\| hub \| FAIL \|/);
-  assert.match(r.all, /\| P11 hub start-up \(10 s per replica\) \| NOT MEASURED \|/);
-  assert.doesNotMatch(r.all, /is at fault/, 'the chart, the database and the cluster are not blamed');
-  assert.match(r.all, /"restartCount":2/, 'the state of each replica is printed');
+  assert.doesNotMatch(r.all, /\| hub \| PASS \|/);
+  assert.match(r.all, NOT_MEASURED);
 });
 
-test('hub: a replica whose log never comes: A1 on 2 of 3, says that no log was retrieved, claims A1 for no one without a log, blames nothing', async () => {
-  const s = await scene('hub-nolog', { SHIM_LOGS_1: 'never' });
-  const r = await s.runSh();
-  s.server.close();
+test('hub: exit code 2 is a setting error even when the log cannot be had', async () => {
+  const r = await runScene('hub-setting-nolog', { SHIM_LOGS_0: 'never' }, { pods: [crashed(1, 2), crashed(1), crashed(1)] });
   assert.equal(r.code, 1, r.all);
-  assert.match(r.all, /FAILED in the stage 'hub': A1 seen in the logs of 2 of 3 replicas; no log could be retrieved for lanekeeper-hub-1 in 2 s, and its state is the same as theirs \(exit 1, never Ready\); A1 is not claimed for it/);
-  assert.doesNotMatch(r.all, /at fault/);
-  assert.doesNotMatch(r.all, /the replicas started and refused/, 'the all-three verdict is not given');
-  assert.doesNotMatch(r.all, /THE HUB REFUSES TO START, ON PURPOSE/);
-  assert.match(r.all, /\| P11 hub start-up \(10 s per replica\) \| NOT MEASURED \|/);
+  assert.match(r.all, /FAILED in the stage 'hub': .*setting.*lanekeeper-hub-0.*exit code 2/);
+});
+
+test('hub: a database error fails the stage, also when the Google error is in the same log', async () => {
+  for (const [name, error] of [['hub-db', DB_ERROR], ['hub-db-timeout', DB_TIMEOUT]]) {
+    const r = await runScene(name, {}, { logs: [googleLog(), googleLog(), withError(error)] });
+    assert.equal(r.code, 1, r.all);
+    assert.match(r.all, new RegExp(`FAILED in the stage 'hub': .*database.*lanekeeper-hub-2.*${error.replace(/[().]/g, '\\$&')}`), name);
+    assert.doesNotMatch(r.all, /\| hub \| PASS \|/);
+  }
+});
+
+test('hub: a schema error fails the stage: the migration did not do what the hub expects', async () => {
+  const r = await runScene('hub-schema', {}, { logs: [withError(SCHEMA_ERROR), googleLog(), googleLog()] });
+  assert.equal(r.code, 1, r.all);
+  assert.match(r.all, /FAILED in the stage 'hub': .*schema check.*lanekeeper-hub-0.*although the migration Job completed.*migration 0001 \(init\) has not been applied/);
+});
+
+test('hub: a replica that is Ready is an unexpected state and fails the stage; the start-up times are printed for whoever looks', async () => {
+  const r = await runScene('hub-ready', {}, { pods: [readyPod(4), readyPod(6), readyPod(12)] });
+  assert.equal(r.code, 1, r.all);
+  assert.match(r.all, /FAILED in the stage 'hub': UNEXPECTED: .*Ready/);
+  assert.match(r.all, /lanekeeper-hub-2: 12 s from the start of the container to Ready, OVER the budget of 10 s \(P11\)/);
+  assert.doesNotMatch(r.all, NOT_MEASURED, 'P11 was measured here, and /readyz answered: nothing is said to be not measured');
+  assert.doesNotMatch(r.all, /\| hub \| PASS \|/);
+});
+
+test('hub: one replica Ready among replicas that stopped at Google is also unexpected', async () => {
+  const r = await runScene('hub-ready-one', {}, { pods: [crashed(1), readyPod(5), crashed(1)] });
+  assert.equal(r.code, 1, r.all);
+  assert.match(r.all, /FAILED in the stage 'hub': UNEXPECTED: lanekeeper-hub-1 is Ready/);
+});
+
+test('hub: a log that no known error explains fails the stage and prints the log', async () => {
+  const odd = jsonLine('ERROR', 'the hub could not start', { error: 'the web app cannot be served from LK_WEB_DIST: no index.html' });
+  const r = await runScene('hub-unknown', {}, { logs: [googleLog(), odd, googleLog()] });
+  assert.equal(r.code, 1, r.all);
+  assert.match(r.all, /FAILED in the stage 'hub': .*lanekeeper-hub-1.*no error that this job knows/);
+  assert.match(r.all, /the web app cannot be served from LK_WEB_DIST: no index\.html/, 'the log is printed');
+  assert.doesNotMatch(r.all, /\| hub \| PASS \|/);
+});
+
+test('hub: a replica without a log fails the stage: nothing is asserted without a log', async () => {
+  const r = await runScene('hub-nolog', { SHIM_LOGS_1: 'never' });
+  assert.equal(r.code, 1, r.all);
+  assert.match(r.all, /FAILED in the stage 'hub': no log could be retrieved for lanekeeper-hub-1 in 2 s/);
   assert.match(r.all, /unable to retrieve container logs|no log could be retrieved/);
+  assert.doesNotMatch(r.all, /\| hub \| PASS \|/);
 });
 
-test('hub: another error in a log is reported as it is, and is not A1', async () => {
-  const s = await scene('hub-other', { SHIM_LOGS_2: 'other:failed to connect to the database: connection refused' });
-  const r = await s.runSh();
-  s.server.close();
+test('hub: a Google refusal with an exit code other than 1 fails the stage', async () => {
+  const r = await runScene('hub-exit137', {}, { pods: [crashed(2, 137), crashed(1), crashed(1)] });
   assert.equal(r.code, 1, r.all);
-  assert.match(r.all, /FAILED in the stage 'hub': not A1: the log of lanekeeper-hub-2 shows another error: .*failed to connect to the database: connection refused/);
-  assert.match(r.all, /2 of 3 replicas logged the A1 refusal/);
-  assert.doesNotMatch(r.all, /THE HUB REFUSES TO START, ON PURPOSE/);
+  assert.match(r.all, /FAILED in the stage 'hub': .*lanekeeper-hub-0.*exit code 137.*expected 1/);
 });
 
-test('hub: a replica with no log whose state is not that of a crashed hub is named with its state, and is not A1', async () => {
-  const s = await scene('hub-pull', { SHIM_LOGS_2: 'never' }, { pods: [crashed(2), crashed(2), imagePull()] });
-  const r = await s.runSh();
-  s.server.close();
+test('hub: replicas that never end or become Ready are judged after LK_KIND_HUB_TIMEOUT, not waited for', async () => {
+  const started = Date.now();
+  const r = await runScene('hub-stuck', { SHIM_LOGS_0: 'never', SHIM_LOGS_1: 'never', SHIM_LOGS_2: 'never' }, { pods: [imagePull(), imagePull(), imagePull()] });
   assert.equal(r.code, 1, r.all);
-  assert.match(r.all, /FAILED in the stage 'hub': not explained by A1: lanekeeper-hub-2 has no log and its state is .*ImagePullBackOff/);
-  assert.match(r.all, /A1 was seen in the logs of 2 of 3 replicas/);
-  assert.doesNotMatch(r.all, /THE HUB REFUSES TO START, ON PURPOSE/);
+  assert.ok(Date.now() - started < 60000, 'the wait is bounded');
+  assert.match(r.all, /FAILED in the stage 'hub': no log could be retrieved for lanekeeper-hub-0/);
+  assert.match(r.all, /ImagePullBackOff/, 'the state of the replica is printed');
 });
 
-test('hub: no replica has a log: nothing is claimed, and nothing is blamed', async () => {
-  const s = await scene('hub-nologs', { SHIM_LOGS_0: 'never', SHIM_LOGS_1: 'never', SHIM_LOGS_2: 'never' });
-  const r = await s.runSh();
-  s.server.close();
+test('hub: a hub chart that does not install fails the stage with the migration Job\'s state and log, and the replicas are not looked at', async () => {
+  const r = await runScene('hub-helm', { SHIM_HELM_HUB_EXIT: '1' });
   assert.equal(r.code, 1, r.all);
-  assert.match(r.all, /FAILED in the stage 'hub': no log could be retrieved for any replica in 2 s; all 3 ended with exit 1 and were never Ready, but A1 is not claimed without a log/);
-  assert.doesNotMatch(r.all, /at fault|A1: the hub binary exits 1/);
+  assert.match(r.all, /FAILED in the stage 'hub': helm could not install the hub chart/);
+  assert.match(r.all, /BackoffLimitExceeded/);
+  assert.match(r.all, /the Job lanekeeper-hub-migrate/);
+  assert.doesNotMatch(r.calls, /logs lanekeeper-hub-0/);
+});
+
+test('hub: a migration Job that does not complete fails the stage before the seed Job and the replicas are looked at', async () => {
+  const r = await runScene('hub-migrate', { SHIM_JOB_MIGRATE: 'timeout' });
+  assert.equal(r.code, 1, r.all);
+  assert.match(r.all, /FAILED in the stage 'hub': the migration Job \(lanekeeper-hub-migrate\) did not complete in 30 s/);
+  assert.doesNotMatch(r.calls, /job\/lanekeeper-hub-seed|logs lanekeeper-hub-0/);
+});
+
+test('hub: a seed Job that does not complete, is missing, or has not succeeded fails the stage', async () => {
+  let r = await runScene('hub-seed', { SHIM_JOB_SEED: 'timeout' });
+  assert.equal(r.code, 1, r.all);
+  assert.match(r.all, /FAILED in the stage 'hub': the seed Job \(lanekeeper-hub-seed-4f2a9c1b7e\) did not complete in 30 s/);
+  assert.doesNotMatch(r.calls, /logs lanekeeper-hub-0/);
+  r = await runScene('hub-seed-missing', { SHIM_SEED_JOBS: '' });
+  assert.equal(r.code, 1, r.all);
+  assert.match(r.all, /FAILED in the stage 'hub': .*seed Job.*found none/);
+  r = await runScene('hub-seed-zero', { SHIM_JOB_SUCCEEDED: '0' });
+  assert.equal(r.code, 1, r.all);
+  assert.match(r.all, /FAILED in the stage 'hub': .*is complete but .status.succeeded is '0', not 1/);
 });
 
 test('s6: a connection with sslmode=disable that succeeds is a violation, and the stage fails', async () => {
@@ -483,25 +758,66 @@ test('s6: a refusal for another reason than pg_hba (a wrong password) does not p
   assert.match(r.all, /FAILED in the stage 's6': sslmode=disable failed, but not because pg_hba rejects an unencrypted connection \(S6\)/);
 });
 
-test('hub_log_usable and hub_replica_class: a sentence in place of a log is no log, and a state is never a refusal', async () => {
-  const cls = async (log, term, code, ready) => (await lib(`hub_replica_class "$1" ${term} ${code} ${ready}`.replace('"$1"', JSON.stringify(log)))).out.trim();
-  assert.equal(await cls(`{"fields":{"message":"${REFUSAL}"}}`, 'true', 1, 'false'), 'refused');
-  assert.equal(await cls('{"fields":{"message":"failed to connect to the database"}}', 'true', 1, 'false'), 'other');
-  assert.equal(await cls('unable to retrieve container logs for containerd://f0ccf06c64bd', 'true', 1, 'false'), 'unlogged-exit1');
-  assert.equal(await cls('', 'true', 1, 'false'), 'unlogged-exit1');
-  assert.equal(await cls('', 'true', 2, 'false'), 'unexplained', 'another exit code is not the refusal\'s');
-  assert.equal(await cls('', 'false', '""', 'false'), 'unexplained', 'a container that never ended is not a crashed hub');
-  assert.equal(await cls('', 'true', 1, 'true'), 'unexplained', 'a Ready replica is not a refusal');
+/** Runs hub_replica_class with the arguments in the environment (a log has quotes, braces and newlines). */
+async function classOf(log, terminated, exitCode, ready) {
+  const r = await lib('hub_replica_class "$LOG" "$TERMINATED" "$EXIT" "$READY"', { env: { LOG: log, TERMINATED: String(terminated), EXIT: String(exitCode), READY: String(ready) } });
+  assert.equal(r.code, 0, r.all);
+  return r.out.trim();
+}
+
+test('hub_replica_class: a Google refusal with exit 1 is google, and each other state has a class of its own', async () => {
+  assert.equal(await classOf(googleLog(), true, 1, false), 'google');
+  assert.equal(await classOf(googleLog(WEB_TIMEOUT), true, 1, false), 'google', 'the start timeout of the web certificate is Google-side');
+  assert.equal(await classOf(withError(CA_AGENT_SECRET, CA_REPLICA_TIMEOUT), true, 1, false), 'google', 'a CA that cannot be read or set up is Google-side');
+  assert.equal(await classOf(googleLog(), true, 1, true), 'ready', 'a Ready replica is not a refusal, whatever its log says');
+  assert.equal(await classOf(SETTING_LOG, true, 2, false), 'setting');
+  assert.equal(await classOf('', true, 2, false), 'setting', 'exit code 2 is a refused setting even when no log could be had');
+  assert.equal(await classOf('hub: the async runtime could not be created', true, 1, false), 'setting', 'every line "hub: ..." is the process stopping before its start');
+  assert.equal(await classOf(withError(DB_ERROR), true, 1, false), 'database', 'a database error beside a Google error is still a database error');
+  assert.equal(await classOf(withError(DB_TIMEOUT), true, 1, false), 'database');
+  assert.equal(await classOf(withError(SCHEMA_ERROR), true, 1, false), 'schema');
+  assert.equal(await classOf(`${withError(DB_ERROR)}\n${withError(SCHEMA_ERROR)}`, true, 1, false), 'schema', 'schema before database, as the more specific');
+  assert.equal(await classOf(`${SETTING_LOG}\n${googleLog()}`, true, 1, false), 'setting', 'a setting error beside anything is a setting error');
+  assert.equal(await classOf(googleLog(), true, 137, false), 'wrong-exit');
+  assert.equal(await classOf(googleLog(), true, 0, false), 'wrong-exit');
+  assert.equal(await classOf(googleLog(), false, '', false), 'wrong-exit', 'a replica that has not ended has no exit code to judge');
+  assert.equal(await classOf(jsonLine('ERROR', 'the hub could not start', { error: 'the web app cannot be served from LK_WEB_DIST: no index.html' }), true, 1, false), 'unknown');
+  assert.equal(await classOf(jsonLine('INFO', 'starting'), true, 1, false), 'unknown', 'a log without any error that explains the exit is not explained');
+  assert.equal(await classOf('unable to retrieve container logs for containerd://f0ccf06c64bd', true, 1, false), 'unlogged', 'a sentence in place of a log is no log');
+  assert.equal(await classOf('', true, 1, false), 'unlogged');
+  assert.equal(await classOf('  \n ', true, 1, false), 'unlogged');
 });
 
-test('hub_verdict: another error wins, then an unexplained state; only 3 refusals are the A1 verdict', async () => {
-  const v = async (...n) => (await lib(`hub_verdict ${n.join(' ')}`)).out.trim();
-  assert.equal(await v(3, 0, 0, 0), 'a1');
-  assert.equal(await v(2, 0, 1, 0), 'a1-partial');
-  assert.equal(await v(1, 0, 2, 0), 'a1-partial');
-  assert.equal(await v(0, 0, 3, 0), 'no-logs');
-  assert.equal(await v(2, 1, 0, 0), 'other-error');
-  assert.equal(await v(1, 1, 0, 1), 'other-error');
-  assert.equal(await v(2, 0, 0, 1), 'unexplained');
-  assert.equal(await v(0, 0, 0, 3), 'unexplained');
+test('hub_replica_class: the markers are fixed strings, not patterns', async () => {
+  // "starting took too long: web certificate" with regex dots would match; here the text must be exact
+  assert.equal(await classOf(jsonLine('ERROR', 'the hub could not start', { error: 'starting took too long: webXcertificate' }), true, 1, false), 'unknown');
+  assert.equal(await classOf(jsonLine('ERROR', 'the hub could not start', { error: 'starting took too long: MCP server' }), true, 1, false), 'unknown', 'a timeout of a later step is not Google-side');
+});
+
+test('hub_verdict: only three replicas that all stopped at Google pass; otherwise the most serious class decides', async () => {
+  const v = async (...classes) => {
+    const r = await lib(`hub_verdict ${classes.join(' ')}`);
+    return `${r.code} ${r.out.trim()}`;
+  };
+  assert.equal(await v('google', 'google', 'google'), '0 google');
+  assert.equal(await v('google', 'setting', 'google'), '1 setting');
+  assert.equal(await v('database', 'setting', 'google'), '1 setting', 'a refused setting is named before a database error');
+  assert.equal(await v('google', 'schema', 'database'), '1 schema');
+  assert.equal(await v('google', 'database', 'ready'), '1 database');
+  assert.equal(await v('google', 'ready', 'google'), '1 ready');
+  assert.equal(await v('google', 'wrong-exit', 'unlogged'), '1 wrong-exit');
+  assert.equal(await v('google', 'unknown', 'unlogged'), '1 unknown');
+  assert.equal(await v('google', 'google', 'unlogged'), '1 unlogged');
+  assert.equal(await v('google', 'google'), '1 unknown', 'two replicas are not three');
+  assert.equal(await v('google', 'google', 'google', 'google'), '1 unknown', 'nor are four');
+  assert.equal(await v('google', 'google', 'refused'), '1 unknown', 'a class that does not exist is not a pass');
+});
+
+test('hub_first_line quotes the first line that holds a marker, cut to 600 characters', async () => {
+  const r = await lib('hub_first_line "$LOG" "the database is not usable" "starting took too long: database"', { env: { LOG: `first\n${withError(DB_ERROR)}\nlast` } });
+  assert.equal(r.code, 0, r.all);
+  assert.match(r.out, /the database is not usable: could not connect to the database/);
+  assert.equal((await lib('hub_first_line "$LOG" "no such marker"', { env: { LOG: 'a\nb' } })).code, 1);
+  const long = await lib('hub_first_line "$LOG" "x"; echo', { env: { LOG: `x${'y'.repeat(900)}` } });
+  assert.equal(long.out.trim().length, 600);
 });

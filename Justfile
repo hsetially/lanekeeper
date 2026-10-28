@@ -1096,10 +1096,12 @@ deploy-argocd: schemas-verify policy-test (ops-tools-check "helm kubeconform") i
 
 # The kind end-to-end test (09 acceptance 3; D62, S6, S7, P11): the hub chart with CloudNativePG on a kind cluster of one control plane
 # and three workers, from the hub image of target/images (`just images-build hub` makes it; CI downloads the one the image job scanned).
-# It checks that `psql sslmode=disable` is rejected, that the database speaks TLS 1.3 only, that /readyz answers on all three replicas,
-# and how long they take to be Ready. Needs Docker on a cgroup v2 host and the network (Docker Hub, ghcr.io, github.com). Like images-repro
-# and sentinel-test it is not part of verify-09, fails without Docker, and is never skipped. CI runs it as the kind-e2e job of images.yml.
-# It is red until plan 09 A1 is resolved (the hub binary exits 1, so no replica becomes Ready), and its output says so.
+# It checks that `psql sslmode=disable` is rejected and that the database speaks TLS 1.3 only (S6); that the migration Job and the seed Job
+# complete against CloudNativePG; and that each replica of the PRODUCTION image stops at its first Google step (exit 1, no setting, database
+# or schema error in its log). It does NOT measure /readyz on three replicas or P11: that image cannot be Ready without real Google and Entra,
+# and kind has neither, so acceptance 3 is not met by this job and its summary says so. Needs Docker on a cgroup v2 host and the network
+# (Docker Hub, ghcr.io, github.com). Like images-repro and sentinel-test it is not part of verify-09, fails without Docker, and is never
+# skipped. CI runs it as the kind-e2e job of images.yml.
 kind-e2e: images-tools-check (ops-tools-check "kind helm crane")
     deploy/tests/kind/run.sh
 

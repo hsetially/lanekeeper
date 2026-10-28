@@ -8,10 +8,13 @@
 #              (deploy/images/reproducible-check.sh), write its CycloneDX SBOM (the image and the Rust crates in the binary),
 #              and scan both: any critical finding fails the job. These jobs hold no write permission and no token.
 #   kind-e2e   the hub chart with CloudNativePG on a kind cluster of one control plane and three workers, from the hub image that `image`
-#              scanned (deploy/tests/kind/run.sh): `psql sslmode=disable` is rejected (S6), the database speaks TLS 1.3 only, /readyz
-#              answers on all three replicas, and the time to Ready is measured (P11). THIS JOB IS RED TODAY, and says why: the hub binary
-#              exits 1 until it is composed (plan 09 A1), so no replica becomes Ready. `publish` does not wait for it, so images are still
-#              published; whether a red kind-e2e blocks a merge is a branch rule for a person (acceptance 3 stays unticked until it is green).
+#              scanned (deploy/tests/kind/run.sh): `psql sslmode=disable` is rejected (S6), the database speaks TLS 1.3 only, the migration
+#              Job and the seed Job complete, and each of the three replicas stops at its first Google step (exit 1, the hub's typed start
+#              error for the web certificate or a CA, and no setting, database or schema error in its log). WHAT IT DOES NOT MEASURE, and
+#              says so in its summary: /readyz on 3 replicas and P11 on the pod. The production image cannot be Ready without real Google
+#              and Entra (prompt 18, G23), and kind has neither, so acceptance 3 is not met by this job and is not ticked anywhere because
+#              of it. `publish` does not wait for it, so images are still published; whether a red kind-e2e blocks a merge is a branch
+#              rule for a person.
 # MAIN AND v* TAGS ONLY:
 #   publish    per image: push the archive that was scanned, byte for byte, to GHCR by digest; sign it keyless (cosign, GitHub's
 #              OIDC token, the Sigstore log); attach the SBOM as a signed attestation; attach SLSA build provenance; sign it again
@@ -210,9 +213,17 @@ jobs:
         with:
           name: image-hub
           path: target/images
-      # Red until plan 09 A1 is resolved: see the header of this file and of deploy/tests/kind/run.sh. It never skips and never retries.
+      # What this job asserts is what the production image can do in kind; see the header of this file and of deploy/tests/kind/run.sh. It
+      # never skips and never retries.
       - name: The hub chart with CloudNativePG, in kind
         run: just kind-e2e
+      # The sentence of lib.sh (the one run.sh prints), appended to the job summary whatever happened above, even when run.sh did not get to
+      # write its own: the job's result is never read without it.
+      - name: Say what this job does not measure
+        if: always()
+        run: |
+          . deploy/tests/kind/lib.sh
+          printf '%s\n' "$KIND_NOT_MEASURED" >> "$GITHUB_STEP_SUMMARY"
       - name: Keep the logs and the diagnostics of the run
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

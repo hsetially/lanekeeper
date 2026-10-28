@@ -4,9 +4,10 @@ A swimlane is exactly one GKE cluster, with one NFS VM, one config-server, one A
 Adding one means the hub learns the swimlane, trusts its agent, lets its network in, and a baseline is adopted. Six steps, in order.
 Most of them are a pull request that `just deploy-check` (the `deploy` workflow) checks; two are done in the cluster or the hub.
 
-**Read this first.** The hub does not serve yet (plan 09 A1: `crates/hub/src/main.rs` exits until the binary is composed), so the steps
-that use the hub (1, the registration in 2, and 6) describe the contract in `api/openapi.yaml` and `db/migrations/0001_init.sql`, not a
-running system, and none of them has been run. Step 1 has a gap that is not this runbook's to close (below).
+**Read this first.** None of the steps that use the hub (1, the registration in 2, and 6) has been run against a running hub: the binary is
+composed (prompt 18) but becomes Ready only with real Google (Secret Manager, KMS) and Entra, and the one test cluster of this repository
+(kind) has neither. They describe the contract in `api/openapi.yaml`, `db/migrations/0001_init.sql` and `crates/hub/README.md`. Step 1 has a
+gap that is not this runbook's to close (below).
 
 | Step | Who | Changes | Checked by |
 |---|---|---|---|
@@ -117,9 +118,10 @@ Copy `deploy/values/agent/sit1.yaml` to `deploy/values/agent/<swimlane>.yaml` an
 | `hubCa.pem` | the **public** certificate of the hub's agent CA, below |
 
 **The hub's CA certificate** is the output of the one-off ceremony `hub ca-init` (plan 03b A8: the CA key is made inside Cloud KMS and
-never leaves it; the certificate is public configuration, kept in Secret Manager or a ConfigMap). The subcommand is not wired into the hub
-binary yet (plan 09 A1), so ask whoever holds the ceremony's output. It is a certificate, never a key: the chart refuses a PEM that holds
-a private key, and refuses to render without one. The committed `sit1.yaml` has none, on purpose.
+never leaves it; the certificate is public configuration, kept in Secret Manager or a ConfigMap). The subcommand is in the hub image
+(`crates/hub/README.md`, "Making the CA certificates"), so ask whoever holds the ceremony's output, or run it as an identity that may sign
+with the key. It is a certificate, never a key: the chart refuses a PEM that holds a private key, and refuses to render without one. The
+committed `sit1.yaml` has none, on purpose.
 
 Then run `just deploy-check`. `render.sh` checks every file under `deploy/values/agent` with a throwaway CA that stands in for the real
 one, so the check passes before the real certificate is in.

@@ -99,14 +99,48 @@ registry_report() {
 }
 
 # ---- the verdict on the hub replicas ------------------------------------------------------------------------------------------
-# The hub binary exits 1 by design until it is composed (plan 09 A1). The stage that finds the replicas crashing must say what it knows
-# about each replica, and no more. The first run that reached it (2026-10-26, run 40374410436) said "the chart, the database connection or the
-# cluster is at fault" for three replicas that all crashed with the A1 refusal: `kubectl logs --previous` had answered for one of them, with
-# exit 0, with the sentence "unable to retrieve container logs for containerd://..." (the kubelet had already removed that container), and
-# run.sh took the sentence for the log.
+# The production hub cannot become Ready in kind: it reads the web certificate and both CA certificates from Secret Manager and signs with
+# Cloud KMS, and it signs users in with Entra, by design (prompt 18, G23: no fake in a release build, no setting that points the image at a
+# stub). So the stage asks what the production image CAN do here, and the verdict below is made of it: each replica reads its settings and
+# accepts them (exit 1, never exit 2), its database and schema checks pass, and it stops at its first Google step. Everything else is a
+# failure that names what was seen. The first run that reached the stage (2026-10-26, run 40374410436) took a sentence of kubectl in place of
+# a log for the log (`kubectl logs --previous` exits 0 with "unable to retrieve container logs for containerd://..." when the kubelet has
+# removed the container), and blamed the chart for what the log would have shown; hub_log_usable keeps that from happening again.
 
-# The refusal, as crates/hub/src/main.rs logs it (kind-run.test.mjs checks the two against each other).
-HUB_REFUSAL_TEXT='this build has no identity module (prompt 03a) and no registry (prompt 05) linked in; refusing to start without them'
+# What this job does not measure, said in one sentence that run.sh prints and the kind-e2e job of images.yml appends to its summary.
+# shellcheck disable=SC2034 # read by run.sh, which sources this file, and by images.yml
+KIND_NOT_MEASURED='/readyz on 3 replicas and P11 on the pod are NOT MEASURED in kind (the production image cannot be Ready without Google and Entra), acceptance 3 is not met by this job'
+
+# ---- the one place that couples this script to prompt 18's wording ----
+# Every string below is looked for in a hub log with `grep -F` (never as a pattern). Each is a literal of the hub's Rust source, in the
+# non-test code of crates/hub/src: .github/scripts/kind-run.test.mjs reads that source and fails when one is gone or reworded, so a change of
+# the hub's message turns this job red in the pull request that changes it, and not on the first run after it. The text of a message is
+# the Display of the error type that is named beside it. To change a marker, change the test's table of anchors with it.
+#
+# Google-side: the hub's typed start errors for what it reads from Secret Manager and signs with KMS. kind has no metadata server, so the
+# error may be the timeout of the step instead of the failure of the read; both are Google's.
+HUB_GOOGLE_MARKERS=(
+    'the web certificate could not be loaded (LK_WEB_CERT_REF, LK_WEB_KEY_REF)' # StartError::WebCertificate (process.rs)
+    'starting took too long: web certificate'                                   # StartError::TimedOut("web certificate") (process.rs, load)
+    'the CA certificate secret could not be read'                               # CaStep::Secret, inside PlatformError::Ca (wiring/grpc.rs)
+    'setting it up took too long'                                               # CaStep::TimedOut, inside PlatformError::Ca (wiring/grpc.rs)
+)
+# The database and the schema checks run in parallel with the Google reads (process.rs, load), each to its end, and every failure is logged.
+HUB_DATABASE_MARKERS=(
+    'the database is not usable'           # StartError::Database (process.rs)
+    'starting took too long: database'     # StartError::TimedOut("database"): the connection and the schema check are one bounded step
+)
+HUB_SCHEMA_MARKERS=(
+    'the database schema is not usable'    # StartError::Schema (process.rs)
+)
+# A setting or the command line refused, or the process stopped before its start: process.rs `say` writes "hub: <message>" to standard error.
+# Exit code 2 says the same without a log.
+HUB_SETTING_PREFIX='hub: '
+
+# hub_markers: every marker above, one per line (what the test compares with the source).
+hub_markers() {
+    printf '%s\n' "${HUB_GOOGLE_MARKERS[@]}" "${HUB_DATABASE_MARKERS[@]}" "${HUB_SCHEMA_MARKERS[@]}" "$HUB_SETTING_PREFIX"
+}
 
 # hub_log_usable LOG: succeeds when LOG is a log: not empty, and not the sentence that kubectl prints in place of the log of a container that
 # the kubelet no longer has.
@@ -114,37 +148,68 @@ hub_log_usable() {
     [ -n "${1//[[:space:]]/}" ] && [[ "$1" != "unable to retrieve container logs"* ]]
 }
 
-# hub_replica_class LOG TERMINATED EXIT READY: what one replica shows, from what was retrieved (TERMINATED is true or false: the container ended at
-# least once; EXIT is the exit code of its last end; READY is true or false):
-#   refused         a usable log holds the A1 refusal
-#   other           a usable log holds something else (a real failure to read, or a log that was read too early)
-#   unlogged-exit1  no usable log; the container ended with exit 1 and was never Ready, as the replicas that did log the refusal did
-#   unexplained     no usable log, and a state that is not that (waiting to pull an image, still starting, ended with another code, ...)
+# hub_has_marker LOG MARKER...: succeeds when a line of LOG holds one of the markers (fixed strings).
+hub_has_marker() {
+    local log="$1" marker
+    shift
+    for marker in "$@"; do
+        if grep -q -F -- "$marker" <<<"$log"; then return 0; fi
+    done
+    return 1
+}
+
+# hub_first_line LOG MARKER...: prints the first line of LOG that holds one of the markers, cut to 600 characters; 1 when there is none.
+hub_first_line() {
+    local log="$1" marker line
+    shift
+    for marker in "$@"; do
+        line="$(grep -F -m1 -- "$marker" <<<"$log" || true)"
+        if [ -n "$line" ]; then printf '%s\n' "${line:0:600}"; return 0; fi
+    done
+    return 1
+}
+
+# hub_replica_class LOG TERMINATED EXIT READY: what one replica shows, from what was retrieved (TERMINATED is true or false: the container
+# ended at least once; EXIT is the exit code of its last end, empty if it has none; READY is true or false). One word:
+#   ready       the pod is Ready. The production image cannot be in kind, so this is a state to look at, not a pass
+#   setting     exit code 2 (a setting or the command line was refused), or a line "hub: ..." (the process stopped before its start)
+#   schema      the hub's schema check failed (the migration did not run, or not against this database)
+#   database    the hub's database check failed
+#   google      the log holds a Google-side marker, no setting, database or schema error, and the last exit code is 1: the verdict as designed
+#   wrong-exit  the same log, and an exit code that is not 1 (or none yet: the container has not ended)
+#   unknown     a usable log that holds none of the markers: something this job does not know, to be read
+#   unlogged    no usable log, and not exit code 2: nothing can be asserted
+# A failure beside a Google error is the failure: the order is setting, schema, database, then Google.
 hub_replica_class() {
     local log="$1" terminated="$2" exit_code="$3" ready="$4"
-    if hub_log_usable "$log"; then
-        if grep -q -F -- "$HUB_REFUSAL_TEXT" <<<"$log"; then echo refused; else echo other; fi
-    elif [ "$terminated" = true ] && [ "$exit_code" = 1 ] && [ "$ready" != true ]; then
-        echo unlogged-exit1
-    else
-        echo unexplained
+    if [ "$ready" = true ]; then echo ready; return 0; fi
+    if [ "$terminated" = true ] && [ "$exit_code" = 2 ]; then echo setting; return 0; fi
+    if ! hub_log_usable "$log"; then echo unlogged; return 0; fi
+    if grep -q -- "^${HUB_SETTING_PREFIX}" <<<"$log"; then echo setting
+    elif hub_has_marker "$log" "${HUB_SCHEMA_MARKERS[@]}"; then echo schema
+    elif hub_has_marker "$log" "${HUB_DATABASE_MARKERS[@]}"; then echo database
+    elif hub_has_marker "$log" "${HUB_GOOGLE_MARKERS[@]}"; then
+        if [ "$terminated" = true ] && [ "$exit_code" = 1 ]; then echo google; else echo wrong-exit; fi
+    else echo unknown
     fi
 }
 
-# hub_verdict REFUSED OTHER UNLOGGED UNEXPLAINED (the counts of the classes above, 3 replicas in all). Prints one word:
-#   other-error  a replica logged something that is not the refusal: a real failure, whatever the others did
-#   unexplained  a replica without a log is in a state that A1 does not explain
-#   a1           all 3 replicas logged the refusal: the verdict as designed
-#   a1-partial   some logged the refusal, and each of the others has no log but ended with exit 1 and was never Ready. Reported as what it is
-#                (A1 seen on N of 3, no log for the rest): the three pods are one StatefulSet with one image and one configuration, so the
-#                same exit is likely the same cause, but a state is not a log, so A1 is not claimed for a replica that has none
-#   no-logs      no log was retrieved for any replica: the exit code 1 of all three is consistent with A1 and shows nothing
+# hub_verdict CLASS CLASS CLASS (the three replicas' classes, in any order). Prints the class that decides and returns 0 only when all three
+# are `google`; otherwise it prints the most serious class that occurs, in this order, and returns 1:
+#   setting schema database ready wrong-exit unknown unlogged
+# Anything else, and any count but three, is `unknown`: never a pass on nothing.
 hub_verdict() {
-    local refused="$1" other="$2" unlogged="$3" unexplained="$4"
-    if [ "$other" -gt 0 ]; then echo other-error
-    elif [ "$unexplained" -gt 0 ]; then echo unexplained
-    elif [ "$refused" -eq 3 ]; then echo a1
-    elif [ "$refused" -gt 0 ] && [ "$((refused + unlogged))" -eq 3 ]; then echo a1-partial
-    else echo no-logs
-    fi
+    local n=0 google=0 class want
+    for class in "$@"; do
+        n=$((n + 1))
+        if [ "$class" = google ]; then google=$((google + 1)); fi
+    done
+    if [ "$n" -eq 3 ] && [ "$google" -eq 3 ]; then echo google; return 0; fi
+    for want in setting schema database ready wrong-exit unknown unlogged; do
+        for class in "$@"; do
+            if [ "$class" = "$want" ]; then echo "$want"; return 1; fi
+        done
+    done
+    echo unknown
+    return 1
 }

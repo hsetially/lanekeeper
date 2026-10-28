@@ -107,7 +107,7 @@ cannot reach Google in kind, stops at its first call to Google (exit 1) and not 
 ```
 just deploy-check        # schemas, lint, kubeconform -strict (offline), the policies on the real output, the planted cases
 deploy/tests/render.sh policy      # one stage of it
-just kind-e2e            # the chart with CloudNativePG on kind (Docker, cgroup v2, network): red until the hub binary runs (plan 09 A1)
+just kind-e2e            # the chart with CloudNativePG on kind (Docker, cgroup v2, network): the Jobs complete, each replica stops at its first Google step
 ```
 
 `deploy/tests/render.sh planted` changes the real output of the chart one thing at a time (a hardening field, a range, a

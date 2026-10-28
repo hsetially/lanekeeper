@@ -41,8 +41,8 @@ project (but Cloud Trace) are refused.
 **The keys are not made here.** A bucket and a disk take the name of a Cloud KMS key that exists (Q29 has not chosen the key ring), in
 the bucket's `location`. Without a key a bucket falls back to Google-managed encryption, which renders with a warning that
 `render.sh` makes a failure for prod and staging. The signing keys (the agent CA, the replica CA, the audit checkpoint key, the token
-KEK) and the hub's Secret Manager and KMS bindings are **not in this commit**: their names are the hub's configuration, which is not
-composed yet (plan 09 A1).
+KEK) and the hub's Secret Manager and KMS bindings are **not in this commit**: their names are settings of the hub chart (`config.kms.*`
+and the Secret Manager names of `crates/hub/HARDENING.md`), and nothing here creates what they name.
 
 ## Admission: only images signed by CI run (09/T6; S19, S20, plan 09 A5)
 

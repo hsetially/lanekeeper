@@ -31,25 +31,27 @@
 #              here, as the chart's README says a person makes them (A7); the passwords exist for this run only.
 #   s6         S6 on the running database: a TLS 1.3 connection with the app role works, and `psql sslmode=disable` is REJECTED by
 #              pg_hba (hostnossl reject), as is a connection that offers TLS 1.2 at most. Also vector, pg_trgm and the collation.
-#   hub        the hub chart with deploy/values/hub/kind.yaml and the image digest: three replicas become Ready. A pod's Ready condition
-#              IS the answer of /readyz on the operations port (its readinessProbe), as the kubelet sees it; the test does not ask
-#              again from outside the pod, because the hub chart's NetworkPolicy admits port 9090 only from the monitoring namespace and
-#              Google's ranges, so a request through the API server's pod proxy would be refused by the policy it is meant to test.
-#              P11 is asserted once they are Ready: each replica must be Ready within 10 s of its container's start (lib.sh,
-#              p11_verdict). The budget is the design scale's and kind's CPUs and disks are not, so a miss is a finding to read
-#              (the number includes the startupProbe's period of 2 s and the readinessProbe's of 5 s, statefulset.yaml:96-108, so a miss may be
-#              probe overhead: lib.sh and README.md say how much), not a flake to retry. While the hub cannot start (below),
-#              the summary says "NOT MEASURED" for P11; it never reports a number it did not measure.
+#   hub        the hub chart with deploy/values/hub/kind.yaml and the image digest, judged by what the PRODUCTION image can do in kind:
+#                1. the migration Job (`hub migrate`, a Helm pre-install hook, so `helm upgrade --install` waits for it) completes against the
+#                   CloudNativePG database: TLS 1.3 with the server verified against the mounted CA, the migrator's `uri`, all migrations;
+#                2. the seed Job (`hub seed`, as the application role, from the synthetic file of kind.yaml) completes;
+#                3. each of the 3 replicas reaches ITS OWN REFUSAL AT THE FIRST GOOGLE STEP: it ends with exit code 1 (never 2: its 25 settings
+#                   were read and accepted), its log holds the hub's typed start error for the web certificate or a CA, or the start timeout
+#                   of that step (kind has no metadata server), and holds no setting error, no database error and no schema error. The
+#                   database and schema checks run in parallel with the Google reads and every failure is logged (crates/hub/src/process.rs,
+#                   `load`), so a log with only a Google error shows that the database was reached over TLS and the schema is complete.
+#              Every other state fails the stage and says what was seen: a refused setting (exit 2, or a line "hub: ..."), a database error, a
+#              schema error, a pod that is Ready (the production image cannot be in kind: an unexpected state for a person to read), a log that
+#              no known error explains (printed), a replica without a log (nothing is asserted without one), an exit code other than 1. The
+#              strings looked for are in ONE block of lib.sh, each a literal of the hub's Rust source, and kind-run.test.mjs fails when one is
+#              gone. Every wait is bounded (LK_KIND_JOBS_TIMEOUT, LK_KIND_HUB_TIMEOUT, LK_KIND_LOG_WAIT).
 #
-# THE HUB DOES NOT BECOME READY TODAY, AND THIS TEST SAYS SO. crates/hub/src/main.rs exits 1 by design until the identity module (03a)
-# and the registry (05) are composed into the binary (plan 09 A1; plans/09-deployment-ci.blockers.md). A hub that exits 1 cannot
-# answer /readyz, so the hub stage fails, and when the logs of all three replicas hold the refusal the output says that the replicas
-# started, read their settings and then refused: the chart is not the fault. The verdict is made from what is retrieved, replica by
-# replica: a replica counts as a refusal only if a log of it holds the exact text of main.rs (never from its state), a log that cannot be
-# had after LK_KIND_LOG_WAIT seconds is said so and A1 is not claimed for it, and another error in a log is reported as it is (lib.sh
-# hub_verdict; the stage never says that the chart, the database or the cluster is at fault). Nothing here fakes readiness, retries until
-# it passes, or skips the stage; the test is red until a human assigns the composition and the hub binary runs. Acceptance 3 stays
-# unticked until then.
+# WHAT THIS JOB DOES NOT MEASURE, AND SAYS SO. The production hub cannot become Ready in kind: it reads the web certificate and the CA
+# certificates from Secret Manager, signs with Cloud KMS and signs users in with Entra, and kind has none of them. That is by design (prompt
+# 18, G23: no fake in a release build, no setting that points the image at a stub). So the summary of every run that reaches the hub stage
+# says, in the sentence of lib.sh KIND_NOT_MEASURED: /readyz on 3 replicas and P11 on the pod are NOT MEASURED in kind, acceptance 3 is not
+# met by this job. Nothing here fakes readiness, retries until it passes, or skips a step. (Should all 3 replicas ever be Ready, the stage
+# fails as unexpected, and measures P11 for whoever reads it: lib.sh p11_verdict, budget P11 = 10 s per replica.)
 #
 # Needs: Docker (a daemon with cgroup v2: the pinned node image's kubelet refuses cgroup v1), kind, helm and crane at the versions of the
 # Justfile (`just ops-tools-install kind helm crane`; `just kind-e2e` checks them), curl, jq, openssl and python3 (publish.sh). kubectl is the
@@ -58,7 +60,9 @@
 # Environment (for a developer's machine; CI sets none):
 #   LK_KIND_CONFIG_FILE  a kind configuration to use instead of the generated one (see --print-kind-config). The cgroup v2 check is then
 #                        yours to make.
-#   LK_KIND_DB_TIMEOUT, LK_KIND_HUB_TIMEOUT   seconds to wait for the database (default 900) and the hub (default 300).
+#   LK_KIND_DB_TIMEOUT, LK_KIND_JOBS_TIMEOUT, LK_KIND_HUB_TIMEOUT   seconds to wait for the database (default 900), for the helm install
+#                        (which waits for the migration Job) and for each Job (300), and for the 3 replicas to end once or be Ready (300).
+#   LK_KIND_POLL_STEP    seconds between two looks at the replicas (default 3; the tests set it lower).
 #   LK_KIND_REGISTRY_WAIT, LK_KIND_NODES_TIMEOUT   seconds to wait for the registry (default 60) and for the four nodes to be Ready (180).
 #   LK_KIND_LOG_WAIT, LK_KIND_LOG_STEP   seconds to ask for each hub replica's log (default 30) and between two asks (2).
 #   LK_WAIT_STEP         seconds between two asks of the registry (default 1; the tests set it lower).
@@ -85,6 +89,11 @@ REGISTRY="kind-registry.test"
 HUB_SELECTOR="app.kubernetes.io/name=lanekeeper-hub"
 DB_TIMEOUT="${LK_KIND_DB_TIMEOUT:-900}"
 HUB_TIMEOUT="${LK_KIND_HUB_TIMEOUT:-300}"
+JOBS_TIMEOUT="${LK_KIND_JOBS_TIMEOUT:-300}"
+POLL_STEP="${LK_KIND_POLL_STEP:-3}"
+# The migration Job is a Helm hook with a fixed name; the seed Job's name is a hash, so it is found by its labels (charts/hub, _helpers.tpl).
+MIGRATE_JOB="lanekeeper-hub-migrate"
+SEED_SELECTOR="app.kubernetes.io/name=lanekeeper-hub-jobs,app.kubernetes.io/component=seed"
 REGISTRY_WAIT="${LK_KIND_REGISTRY_WAIT:-60}"
 NODES_TIMEOUT="${LK_KIND_NODES_TIMEOUT:-180}"
 # How long a replica's log is asked for (the kubelet may not have it yet, or may have removed the container), and the pause between two asks.
@@ -184,12 +193,14 @@ record() { # STAGE RESULT SECONDS [NOTE]; a `|` in a note would split the table'
     printf '| %s | %s | %s | %s |\n' "$1" "$2" "$3" "$note" >> "$summary"
 }
 
+stage_note="" # what a stage that passed wants to say in its row; the stage sets it
 stage() { # NAME FUNCTION
     current_stage="$1"
     stage_started=$SECONDS
+    stage_note=""
     say "== $1"
     "$2"
-    record "$1" PASS "$((SECONDS - stage_started))"
+    record "$1" PASS "$((SECONDS - stage_started))" "$stage_note"
 }
 
 diagnostics() {
@@ -237,9 +248,6 @@ on_exit() {
             fail_reason="a command failed with exit $failed_rc at $failed_at, and nothing handled it: $failed_cmd"
         fi
         record "$current_stage" FAIL "$((SECONDS - stage_started))" "$fail_reason"
-        if [ "$current_stage" = hub ] && [ -z "$p11_measured" ]; then
-            record "P11 hub start-up (10 s per replica)" "NOT MEASURED" "-" "the replicas were not all Ready, so no start-up time exists to judge"
-        fi
         say "FAILED in the stage '$current_stage'${fail_reason:+: $fail_reason}" >&2
         case "$current_stage" in
             registry | cluster | "hub image")
@@ -250,6 +258,14 @@ on_exit() {
         say "== the cluster, as it was when the stage failed (all of it is in $out/diagnostics.txt)"
         diagnostics
         grep -i -E "failed to pull|ErrImagePull|ImagePullBackOff|forbidden|403|denied|no such host|BackOff|Unhealthy" "$out/diagnostics.txt" | sort -u | head -n 12 || true
+    fi
+    # Whenever the hub stage was reached, pass or fail: what the production image cannot show in kind (the sentence is lib.sh's). When P11
+    # was measured (all replicas Ready: unexpected), it has its own row and nothing is said to be not measured.
+    if [ "$current_stage" = hub ] && [ -z "$p11_measured" ] && [ -f "$summary" ]; then
+        record "/readyz on 3 replicas" "NOT MEASURED" "-" "the production image cannot be Ready without Google and Entra (prompt 18, G23), and kind has neither"
+        record "P11 hub start-up (${P11_BUDGET_S} s per replica)" "NOT MEASURED" "-" "no replica is Ready, so no start-up time exists to judge"
+        record "acceptance 3 (/readyz on 3 replicas)" "NOT MET by this job" "-" "see the sentence below"
+        printf '\n**%s.**\n' "$KIND_NOT_MEASURED" >> "$summary"
     fi
     if [ -f "$summary" ]; then
         echo
@@ -483,20 +499,69 @@ check_s6() {
 
 # ---- stage: hub --------------------------------------------------------------------------------------------------------------
 
-# "ready total crashing": pods that are Ready, pods that exist, and pods that are not Ready and have restarted at least twice.
+# "ready total settled": pods that are Ready, pods that exist, and pods that are Ready or have ended at least once. A container that has ended has a
+# log to read and an exit code to judge; the kubelet restarts it after a back-off, and the next end is the same one.
 hub_state() {
     k -n "$NS" get pods -l "$HUB_SELECTOR" -o json | jq -r '
-        [.items[] | {ready: ((.status.conditions // []) | any(.type == "Ready" and .status == "True")),
-                     restarts: ((.status.containerStatuses // []) | map(.restartCount) | add // 0)}]
-        | "\(map(select(.ready)) | length) \(length) \(map(select((.restarts >= 2) and (.ready | not))) | length)"'
+        [.items[] | ((.status.containerStatuses // [])[0] // {}) as $c
+                  | {ready: ((.status.conditions // []) | any(.type == "Ready" and .status == "True")),
+                     ended: (($c.state.terminated // $c.lastState.terminated) != null)}]
+        | "\(map(select(.ready)) | length) \(length) \(map(select(.ready or .ended)) | length)"'
 }
 
-# One replica, as far as it can be known: its container state, and its log, retried for up to LOG_WAIT seconds. A log is taken from the
-# current container and from the previous one, whichever is usable (lib.sh hub_log_usable); one that holds the refusal ends the wait at once, any
-# other usable log ends it once the container has ended (a log of a running container may be unfinished). Sets R_LOG (empty when none could be
-# retrieved), R_STATE (the container status as JSON), R_SUMMARY (what the verdict reads, as one line), R_TERMINATED, R_EXIT and R_READY.
+# What a person needs when a Job has not done its work, on standard error: its state, and the last lines of the log of each of its pods. It never fails.
+job_report() { # JOB
+    {
+        echo "---- the Job $1"
+        k -n "$NS" get job "$1" -o wide
+        k -n "$NS" describe job "$1" | tail -n 30
+        echo "---- the log of the Job $1 (the last 40 lines of each of its pods)"
+        k -n "$NS" logs -l "job-name=$1" --all-containers --tail=40 --prefix
+    } >&2 || true
+}
+
+# The Job must be complete within JOBS_TIMEOUT seconds (a bounded `kubectl wait`), and have succeeded once. On failure: its state and its log.
+wait_for_job() { # JOB WHAT
+    local job="$1" what="$2" succeeded
+    if ! k -n "$NS" wait --for=condition=complete "job/$job" --timeout="${JOBS_TIMEOUT}s" > "$out/wait-$job.log" 2>&1; then
+        cat "$out/wait-$job.log" >&2
+        job_report "$job"
+        fail_reason="$what ($job) did not complete in ${JOBS_TIMEOUT} s (its state and its log are above)"
+        return 1
+    fi
+    succeeded="$(k -n "$NS" get job "$job" -o jsonpath='{.status.succeeded}')"
+    if [ "$succeeded" != 1 ]; then
+        job_report "$job"
+        fail_reason="$what ($job) is complete but .status.succeeded is '$succeeded', not 1"
+        return 1
+    fi
+    say "$what ($job) completed; the last lines of its log:"
+    k -n "$NS" logs -l "job-name=$job" --all-containers --tail=10 || true
+}
+
+# Waits, within HUB_TIMEOUT seconds, until every replica is Ready or has ended once. Then it returns, whatever the state: the replicas are judged as
+# they are, and one that never ended has no log and fails the stage by that.
+await_replicas() {
+    local t0=$SECONDS ready total settled
+    while :; do
+        read -r ready total settled <<<"$(hub_state || echo "0 0 0")"
+        say "hub: $total pods, $ready Ready, $settled of 3 Ready or ended once, $((SECONDS - t0)) s after the install"
+        if [ "$total" = 3 ] && [ "$settled" = 3 ]; then return 0; fi
+        if [ "$((SECONDS - t0))" -ge "$HUB_TIMEOUT" ]; then
+            say "hub: ${HUB_TIMEOUT} s have passed; the replicas are judged as they are"
+            return 0
+        fi
+        sleep "$POLL_STEP"
+    done
+}
+
+# One replica, as far as it can be known: its container state, and its log, retried for up to LOG_WAIT seconds. The log is that of the current
+# container and that of the previous one (both usable ones, previous first: an error in either counts; lib.sh hub_log_usable), and the wait ends
+# once there is a log and the container has ended (a log of a running container may be unfinished, and an exit code needs an end). A Ready replica
+# needs no log. Sets R_LOG (empty when none could be retrieved), R_STATE (the container status as JSON), R_SUMMARY (what the verdict reads, as
+# one line), R_TERMINATED, R_EXIT and R_READY.
 collect_replica() { # POD
-    local pod="$1" deadline=$((SECONDS + LOG_WAIT)) prev out args
+    local pod="$1" deadline=$((SECONDS + LOG_WAIT)) prev out args current previous
     R_LOG=""
     while :; do
         R_STATE="$(k -n "$NS" get pod "$pod" -o json 2>/dev/null | jq -c '.status.containerStatuses[0] // {}' 2>/dev/null || true)"
@@ -505,115 +570,127 @@ collect_replica() { # POD
         R_TERMINATED="$(jq -r '((.state.terminated // .lastState.terminated) != null)' <<<"$R_STATE" 2>/dev/null || echo false)"
         R_EXIT="$(jq -r '(.state.terminated.exitCode // .lastState.terminated.exitCode // "")' <<<"$R_STATE" 2>/dev/null || true)"
         R_READY="$(jq -r '(.ready // false)' <<<"$R_STATE" 2>/dev/null || echo false)"
+        if [ "$R_READY" = true ]; then return 0; fi
+        current=""
+        previous=""
         for prev in "" "--previous"; do
-            args=(-n "$NS" logs "$pod" -c hub --tail=20)
+            args=(-n "$NS" logs "$pod" -c hub --tail=40)
             [ -z "$prev" ] || args+=("$prev")
             if out="$(k "${args[@]}" 2>&1)" && hub_log_usable "$out"; then
-                if grep -q -F -- "$HUB_REFUSAL_TEXT" <<<"$out"; then R_LOG="$out"; return 0; fi
-                [ -n "$R_LOG" ] || R_LOG="$out"
+                if [ -z "$prev" ]; then current="$out"; else previous="$out"; fi
             fi
         done
+        R_LOG="$previous${previous:+${current:+$'\n'}}$current"
         if [ -n "$R_LOG" ] && [ "$R_TERMINATED" = true ]; then return 0; fi
         [ "$SECONDS" -lt "$deadline" ] || return 0
         sleep "$LOG_STEP"
     done
 }
 
-# The verdict on the replicas of a hub that does not become Ready (lib.sh hub_verdict). The stage is red in every case, as acceptance 3 is
-# not met; what differs is what it claims. It never says that the chart, the database or the cluster is at fault: it says what each replica
-# showed, and for a replica without a log, only its state.
-hub_failed() {
-    local pod i class verdict refused=0 other=0 unlogged=0 unexplained=0 refused_pods="" other_line="" other_pod="" unlogged_pods="" unexplained_pods="" unexplained_state=""
+# P11, measured for whoever reads an unexpected state: from each container's start to its Ready condition (the API's timestamps have a resolution
+# of one second). Only called when all three replicas are Ready, which the production image cannot be in kind.
+measure_p11() {
+    local p11_rc=0
+    k -n "$NS" get pods -l "$HUB_SELECTOR" -o json | jq -r '.items[] | "\(.metadata.name) \(((.status.conditions[] | select(.type == "Ready") | .lastTransitionTime) | fromdateiso8601) - (.status.containerStatuses[0].state.running.startedAt | fromdateiso8601))"' > "$out/time-to-ready.txt" || {
+        say "the start-up times of the replicas could not be read from the pods (P11 was not measured)"
+        return 0
+    }
+    p11_measured=1
+    p11_verdict "$P11_BUDGET_S" < "$out/time-to-ready.txt" > "$out/p11.txt" 2>&1 || p11_rc=$?
+    cat "$out/p11.txt"
+    if [ "$p11_rc" -ne 0 ]; then
+        record "P11 hub start-up (${P11_BUDGET_S} s per replica)" FAIL "${P11_WORST:-?}" "slowest replica; $(tr '\n' ';' < "$out/p11.txt")"
+    else
+        record "P11 hub start-up (${P11_BUDGET_S} s per replica)" PASS "$P11_WORST" "slowest of 3 replicas, container start to Ready"
+    fi
+}
+
+# Prints what each replica shows and judges the three (lib.sh hub_replica_class and hub_verdict). Returns 0 only when all three stopped at their first
+# Google step; otherwise it sets fail_reason from the most serious class and returns 1. It says what a log or an exit code shows and no more: it
+# never says that the chart, the database or the cluster is at fault for a replica whose log does not.
+judge_replicas() {
+    local pod i class verdict at=0 rc=0 line ready_count=0
+    local -a classes=() pods=() codes=() states=() logs=()
     echo "---- the hub pods"
     k -n "$NS" get pods -l "$HUB_SELECTOR" -o wide || true
     for i in 0 1 2; do
         pod="lanekeeper-hub-$i"
         collect_replica "$pod"
         class="$(hub_replica_class "$R_LOG" "$R_TERMINATED" "$R_EXIT" "$R_READY")"
-        echo "---- $pod: state (restartCount, ready, waiting reason, exit code, started, finished): $R_SUMMARY"
-        echo "---- $pod: log ($class)"
-        if hub_log_usable "$R_LOG"; then echo "$R_LOG"; else echo "(no log could be retrieved in ${LOG_WAIT} s)"; fi
-        case "$class" in
-            refused) refused=$((refused + 1)); refused_pods="$refused_pods $pod" ;;
-            other) other=$((other + 1)); if [ -z "$other_pod" ]; then other_pod="$pod"; other_line="$(grep -v '^[[:space:]]*$' <<<"$R_LOG" | tail -n 1 | cut -c1-600)"; fi ;;
-            unlogged-exit1) unlogged=$((unlogged + 1)); unlogged_pods="$unlogged_pods $pod" ;;
-            unexplained) unexplained=$((unexplained + 1)); if [ -z "$unexplained_pods" ]; then unexplained_state="$R_SUMMARY"; fi; unexplained_pods="$unexplained_pods $pod" ;;
-        esac
+        classes+=("$class")
+        pods+=("$pod")
+        codes+=("$R_EXIT")
+        states+=("$R_SUMMARY")
+        logs+=("$R_LOG")
+        if [ "$class" = ready ]; then ready_count=$((ready_count + 1)); fi
+        echo "---- $pod: $class; state (restartCount, ready, waiting reason, exit code, started, finished): $R_SUMMARY"
+        if hub_log_usable "$R_LOG"; then printf '%s\n' "$R_LOG" | tail -n 20; elif [ "$R_READY" != true ]; then echo "(no log could be retrieved in ${LOG_WAIT} s)"; fi
     done
-    verdict="$(hub_verdict "$refused" "$other" "$unlogged" "$unexplained")"
+    verdict="$(hub_verdict "${classes[@]}")" || rc=$?
+    for i in 0 1 2; do
+        if [ "${classes[$i]}" = "$verdict" ]; then at=$i; break; fi
+    done
+    pod="${pods[$at]}"
     echo "----"
     case "$verdict" in
-        a1)
-            cat <<'EOF'
-THE HUB REFUSES TO START, ON PURPOSE (plan 09 A1). All three replicas started, read their settings and got past telemetry, and then
-logged that this build has no identity module (prompt 03a) and no registry (prompt 05) linked in, and exited with code 1
-(crates/hub/src/main.rs). A hub that exits 1 cannot answer /readyz. The chart, the database, the image and the cluster are not at fault.
-This stays red until a human assigns the composition of the binary; acceptance 3 is not met until then, and this test does not
-pretend otherwise.
-EOF
-            fail_reason="A1: the hub binary exits 1 by design until it is composed (03a and 05); the replicas started and refused"
+        google)
+            say "all 3 replicas read their settings, ended with exit code 1 and stopped at their first Google step; no log holds a setting, database or schema error"
+            stage_note="the migration and seed Jobs completed; all 3 replicas stopped at their first Google step (exit 1) with no setting, database or schema error in their logs"
             ;;
-        a1-partial)
-            echo "A1 (plan 09), seen on $refused of 3 replicas: their logs hold the refusal of crates/hub/src/main.rs, and they exited with code 1."
-            echo "No log could be retrieved in ${LOG_WAIT} s for${unlogged_pods}; its state is the same as theirs (exit 1, never Ready), and nothing in it says more."
-            echo "A1 is not claimed for a replica without a log. This stays red: acceptance 3 is not met, and P11 is not measured."
-            fail_reason="A1 seen in the logs of $refused of 3 replicas; no log could be retrieved for${unlogged_pods} in ${LOG_WAIT} s, and its state is the same as theirs (exit 1, never Ready); A1 is not claimed for it"
+        setting)
+            line="$(hub_first_line "${logs[$at]}" "$HUB_SETTING_PREFIX" || true)"
+            fail_reason="a setting or the command line was refused by $pod, or it stopped before its start (exit code ${codes[$at]:-unknown}): ${line:-no log could be retrieved}"
             ;;
-        other-error)
-            echo "THIS IS NOT THE A1 REFUSAL. The log of $other_pod holds another error, which is the failure to look at (the whole logs are above):"
-            echo "$other_line"
-            fail_reason="not A1: the log of $other_pod shows another error: $other_line ($refused of 3 replicas logged the A1 refusal)"
+        schema)
+            line="$(hub_first_line "${logs[$at]}" "${HUB_SCHEMA_MARKERS[@]}" || true)"
+            fail_reason="the schema check failed on $pod although the migration Job completed: $line"
             ;;
-        unexplained)
-            echo "NOT EXPLAINED BY A1:${unexplained_pods} has no log, and its state is not that of a crashed hub: $unexplained_state"
-            fail_reason="not explained by A1:${unexplained_pods} has no log and its state is $unexplained_state; A1 was seen in the logs of $refused of 3 replicas"
+        database)
+            line="$(hub_first_line "${logs[$at]}" "${HUB_DATABASE_MARKERS[@]}" || true)"
+            fail_reason="the database check failed on $pod: $line"
+            ;;
+        ready)
+            if [ "$ready_count" -eq 3 ]; then measure_p11; fi
+            fail_reason="UNEXPECTED: $pod is Ready. The production image cannot become Ready in kind (it needs real Google and Entra), so this is a state for a person to read: either the image or this environment is no longer what this stage was written for"
+            ;;
+        wrong-exit)
+            if [ -n "${codes[$at]}" ]; then line="exit code ${codes[$at]}"; else line="no end with an exit code yet"; fi
+            fail_reason="$pod shows a Google refusal in its log, but its last end was $line (expected 1)"
+            ;;
+        unknown)
+            echo "---- the log of $pod, which holds none of the errors this job knows (all that was retrieved):"
+            printf '%s\n' "${logs[$at]}"
+            fail_reason="$pod stopped with no error that this job knows (exit code ${codes[$at]:-unknown}); its log is above and is the failure to read"
             ;;
         *)
-            echo "No log could be retrieved for any replica in ${LOG_WAIT} s. All 3 ended with exit 1 and were never Ready, which is what A1 looks like and what"
-            echo "other crashes of this binary look like too; A1 is not claimed without a log."
-            fail_reason="no log could be retrieved for any replica in ${LOG_WAIT} s; all 3 ended with exit 1 and were never Ready, but A1 is not claimed without a log"
+            fail_reason="no log could be retrieved for $pod in ${LOG_WAIT} s (state: ${states[$at]}); nothing is asserted about a replica without a log"
             ;;
     esac
-    return 1
+    return "$rc"
 }
 
 install_hub() {
-    local t0=$SECONDS ready total crashing
+    local seeds n
+    local -a seed_jobs=()
+    # The migration Job is a pre-install hook: helm waits for it (within --timeout), and fails when it fails. The seed Job is not a hook.
     helm upgrade --install lanekeeper-hub "$root/deploy/charts/hub" --namespace "$NS" -f "$root/deploy/values/hub/kind.yaml" \
-        --set "image.repository=$REGISTRY/lanekeeper/hub" --set "image.digest=$hub_digest" > "$out/helm-hub.log" 2>&1 || {
+        --set "image.repository=$REGISTRY/lanekeeper/hub" --set "image.digest=$hub_digest" --timeout "${JOBS_TIMEOUT}s" > "$out/helm-hub.log" 2>&1 || {
         tail -n 20 "$out/helm-hub.log" >&2
-        fail_reason="helm could not install the hub chart"
+        job_report "$MIGRATE_JOB"
+        fail_reason="helm could not install the hub chart (the migration Job is a pre-install hook, so a Job that failed or did not finish in ${JOBS_TIMEOUT} s ends here; the helm output and the Job's log are above)"
         return 1
     }
-    while :; do
-        read -r ready total crashing <<<"$(hub_state || echo "0 0 0")"
-        say "hub: $ready of 3 Ready ($total pods, $crashing restarting), $((SECONDS - t0)) s after the install"
-        [ "$ready" = 3 ] && break
-        if [ "${crashing:-0}" -gt 0 ]; then hub_failed; return 1; fi
-        if [ "$((SECONDS - t0))" -ge "$HUB_TIMEOUT" ]; then
-            hub_failed || true
-            fail_reason="the hub was not Ready on all 3 replicas in ${HUB_TIMEOUT} s; $fail_reason"
-            return 1
-        fi
-        sleep 3
-    done
-    local to_ready="$((SECONDS - t0))"
-    # P11, asserted: from each container's start to its Ready condition (the API's timestamps have a resolution of one second).
-    k -n "$NS" get pods -l "$HUB_SELECTOR" -o json | jq -r '.items[] | "\(.metadata.name) \(((.status.conditions[] | select(.type == "Ready") | .lastTransitionTime) | fromdateiso8601) - (.status.containerStatuses[0].state.running.startedAt | fromdateiso8601))"' > "$out/time-to-ready.txt" || {
-        fail_reason="the start-up times of the replicas could not be read from the pods (P11 was not measured)"
-        return 1
-    }
-    p11_measured=1
-    local p11_rc=0
-    p11_verdict "$P11_BUDGET_S" < "$out/time-to-ready.txt" > "$out/p11.txt" 2>&1 || p11_rc=$?
-    cat "$out/p11.txt"
-    say "all 3 replicas Ready ${to_ready} s after the install; the slowest replica took ${P11_WORST:-?} s from its container's start (P11's budget is ${P11_BUDGET_S} s per replica; kind is not the design scale)"
-    if [ "$p11_rc" -ne 0 ]; then
-        record "P11 hub start-up (${P11_BUDGET_S} s per replica)" FAIL "${P11_WORST:-?}" "slowest replica; $(tr '\n' ';' < "$out/p11.txt")"
-        fail_reason="P11: a replica was not Ready within ${P11_BUDGET_S} s of its container's start (the slowest took ${P11_WORST:-?} s): $(grep -E 'OVER|not measured|no replica' "$out/p11.txt" | head -n 3 | tr '\n' ';')"
+    wait_for_job "$MIGRATE_JOB" "the migration Job" || return 1
+    seeds="$(k -n "$NS" get jobs -l "$SEED_SELECTOR" -o jsonpath='{.items[*].metadata.name}')"
+    read -r -a seed_jobs <<<"$seeds"
+    n="${#seed_jobs[@]}"
+    if [ "$n" -ne 1 ]; then
+        fail_reason="expected one seed Job (labels $SEED_SELECTOR; kind.yaml sets seed.enabled), found $([ "$n" -eq 0 ] && echo none || echo "$n: $seeds")"
         return 1
     fi
-    record "P11 hub start-up (${P11_BUDGET_S} s per replica)" PASS "$P11_WORST" "slowest of 3 replicas, container start to Ready; install to all Ready ${to_ready} s"
+    wait_for_job "${seed_jobs[0]}" "the seed Job" || return 1
+    await_replicas
+    judge_replicas
 }
 
 # ---- run ---------------------------------------------------------------------------------------------------------------------
