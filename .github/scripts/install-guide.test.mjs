@@ -20,6 +20,13 @@
 //   placeholders  every <UPPER_CASE> placeholder is defined in the table of step 0, and every one defined there is used
 //   identifiers   nothing looks like a real secret, key, token, project id, host name, address or tenant id
 //   gaps          the list of known gaps names what the inventory and the blockers say is open
+//   ca-binding    a block that grants a role on a Cloud KMS key names at most one of the two CA keys, so that no identity can sign with both
+//                 CAs at once (S5): the roles go on one key at a time and come off before the next
+//   secret-print  a command that reads a secret value (gcloud secrets versions access, kubectl get secret -o ...) does not print it: it
+//                 redirects it to a file or pipes it to something that is not cat, tee or a pager
+//   secret-file   the file such a command writes is in a directory made by mktemp -d under umask 077, not in the current directory
+//                 (which may be a checkout of this repository), and the block removes the directory
+//   fqdn          `network.fqdnPolicy: false` is offered nowhere but as "for kind only"; it is never in a command or a values block
 //   links         deploy/argocd/README.md and deploy/ADDING-A-SWIMLANE.md point to the guide
 //   triggers      deploy.yml and ci.yml run when the guide changes, and deploy-check runs this test
 //
@@ -220,6 +227,33 @@ function codeLines(md) {
   return out;
 }
 
+/** The commands of a fenced block: lines joined at a trailing backslash, comments and blank lines left out. */
+function commandsOf(lines) {
+  const out = [];
+  let current = '';
+  for (const raw of lines) {
+    if (current === '' && /^\s*(#|$)/.test(raw)) continue;
+    const line = raw.replace(/\s+$/, '');
+    if (line.endsWith('\\')) {
+      current += `${line.slice(0, -1)} `;
+    } else {
+      out.push(`${current}${line}`);
+      current = '';
+    }
+  }
+  if (current !== '') out.push(current);
+  return out;
+}
+
+/** The paragraph (the lines up to the blank ones around it) that holds line `index`. */
+function paragraphAround(lines, index) {
+  let begin = index;
+  while (begin > 0 && lines[begin - 1].trim() !== '') begin -= 1;
+  let end = index;
+  while (end + 1 < lines.length && lines[end + 1].trim() !== '') end += 1;
+  return lines.slice(begin, end + 1).join('\n');
+}
+
 // ---- the checks ----------------------------------------------------------------------------------------------------------------
 
 const GAPS_MUST_NAME = [
@@ -410,6 +444,51 @@ function check(text, repo) {
     }
   });
 
+  // ca-binding: the two CA keys are never bound at once
+  for (const b of md.blocks) {
+    const block = b.lines.join('\n');
+    if (!/kms\s+keys\s+add-iam-policy-binding/.test(block)) continue;
+    const named = ['<AGENT_CA_KEY_NAME>', '<REPLICA_CA_KEY_NAME>'].filter((k) => block.includes(k));
+    if (named.length > 1) {
+      fail('ca-binding', `line ${b.start + 1}: a block that grants a role on a Cloud KMS key names both CA keys (${named.join(', ')}); the roles go on one key at a time and come off before the next, so that no identity can sign with both CAs at once (S5)`);
+    }
+  }
+
+  // secret-print and secret-file
+  const readsSecret = /gcloud\s+secrets\s+versions\s+access\b|\bkubectl\b.*\bget\s+secrets?\b.*(?:-o|--output)[ =]?(?:yaml|json|jsonpath|go-template)/;
+  for (const b of md.blocks) {
+    const block = b.lines.join('\n');
+    for (const raw of commandsOf(b.lines)) {
+      // <PLACEHOLDER> has angle brackets, which are not a redirect.
+      const command = raw.replace(/<[A-Z][A-Z0-9_]*>/g, 'PLACEHOLDER');
+      if (!readsSecret.test(command)) continue;
+      const redirect = /(?:^|[^>0-9&])>\s*("[^"]*"|'[^']*'|[^\s;|)&]+)/.exec(command);
+      const piped = /\|\s*(?!cat\b|tee\b|less\b|more\b)\S/.test(command);
+      if (!redirect && !piped) {
+        fail('secret-print', `line ${b.start + 1}: a command prints a secret value to the terminal, where the scrollback and the shell's history keep it: ${command.slice(0, 90)}`);
+      } else if (redirect) {
+        if (!/^["']?(\$|\/|~)/.test(redirect[1])) {
+          fail('secret-file', `line ${b.start + 1}: a secret value is written into ${redirect[1]}, which is in the current directory (it may be a checkout of this repository); write it into a directory made by mktemp -d`);
+        }
+        for (const [re, what] of [[/\bmktemp\s+-d\b/, 'mktemp -d'], [/\bumask\s+077\b/, 'umask 077'], [/\brm\s+-r\w*\s/, 'rm -r of the directory']]) {
+          if (!re.test(block)) fail('secret-file', `line ${b.start + 1}: the block that writes a secret value to a file has no ${what}`);
+        }
+      }
+    }
+  }
+
+  // fqdn: fqdnPolicy false is for kind only
+  md.lines.forEach((l, i) => {
+    if (!/fqdnPolicy/.test(l)) return;
+    const around = paragraphAround(md.lines, i);
+    if (!/fqdnPolicy[^\n]{0,24}false|false[^\n]{0,24}fqdnPolicy/.test(around)) return;
+    if (!/kind only/.test(around)) fail('fqdn', `line ${i + 1}: fqdnPolicy false is mentioned and the paragraph does not say that it is for kind only`);
+  });
+  for (const b of md.blocks) {
+    const block = b.lines.join('\n');
+    if (/fqdnPolicy\s*[:=]\s*false/.test(block)) fail('fqdn', `line ${b.start + 1}: a command or values block sets fqdnPolicy to false, which the policies refuse for staging and prod`);
+  }
+
   // gaps
   const gaps = secs[secs.length - 1];
   if (gaps) {
@@ -511,6 +590,18 @@ const MUTANTS = [
   ['identifiers', 'a public address', (t) => `${t}\nAllow 8.8.4.4 in.\n`],
   ['identifiers', 'a service account of a real project', (t) => `${t}\nas hub@acme-prod-4711.iam.gserviceaccount.com\n`],
   ['gaps', 'a known gap that the list forgets', (t) => t.replaceAll('publishNotReadyAddresses', 'publishing')],
+  // 09/fix, round 2 (NB-4): the rules that hold what round 1 fixed in the guide.
+  ['ca-binding', 'a loop that binds both CA keys at once', (t) => replaceFirst(t, /for role in roles\/cloudkms\.publicKeyViewer roles\/cloudkms\.signerVerifier; do\n  gcloud kms keys add-iam-policy-binding <AGENT_CA_KEY_NAME>/, () => 'for key in <AGENT_CA_KEY_NAME> <REPLICA_CA_KEY_NAME>; do for role in roles/cloudkms.publicKeyViewer roles/cloudkms.signerVerifier; do\n  gcloud kms keys add-iam-policy-binding "$key"')],
+  ['ca-binding', 'the replica key bound in the block of the agent key', (t) => replaceFirst(t, /(  gcloud kms keys add-iam-policy-binding <AGENT_CA_KEY_NAME>[^\n]*\n[^\n]*\n)done/, (m) => `${m[1]}done\ngcloud kms keys add-iam-policy-binding <REPLICA_CA_KEY_NAME> --keyring=<KEYRING> --location=<LOCATION> --member=serviceAccount:<CA_INIT_GSA>@<PROJECT_ID>.iam.gserviceaccount.com --role=roles/cloudkms.signerVerifier`)],
+  ['secret-print', 'a secret read and printed', (t) => `${t}\n\`\`\`bash\ngcloud secrets versions access latest --secret=github-webhook-secret --project=<PROJECT_ID>\n\`\`\`\n`],
+  ['secret-print', 'a secret read and piped to cat', (t) => `${t}\n\`\`\`bash\ngcloud secrets versions access latest --secret=github-webhook-secret --project=<PROJECT_ID> | cat\n\`\`\`\n`],
+  ['secret-print', 'a Kubernetes Secret printed over a continued line', (t) => `${t}\n\`\`\`bash\nkubectl -n lanekeeper get secret lanekeeper-db-app \\\n  -o jsonpath='{.data.uri}'\n\`\`\`\n`],
+  ['secret-file', 'the webhook secret written into the current directory', (t) => replaceFirst(t, /> "\$dir\/webhook-secret\.txt"\)/, () => '> webhook-secret.txt)')],
+  ['secret-file', 'the private directory not made', (t) => replaceFirst(t, /dir="\$\(umask 077; mktemp -d\)"\n/, () => 'dir=/tmp/hook\n')],
+  ['secret-file', 'the directory not removed', (t) => replaceFirst(t, /\nrm -r "\$dir"/, () => '')],
+  ['fqdn', 'fqdnPolicy false set in a values block', (t) => `${t}\n\`\`\`yaml\nnetwork:\n  fqdnPolicy: false\n\`\`\`\n`],
+  ['fqdn', 'fqdnPolicy false in a values block that says it is for kind only', (t) => `${t}\nA value for kind only:\n\`\`\`yaml\nnetwork:\n  fqdnPolicy: false\n\`\`\`\n`],
+  ['fqdn', 'fqdnPolicy false offered for any cluster', (t) => replaceFirst(t, /is for\nkind only/, () => 'is for\nclusters without the feature')],
 ];
 
 for (const [rule, what, mutate] of MUTANTS) {

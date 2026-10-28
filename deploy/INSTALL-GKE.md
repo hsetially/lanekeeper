@@ -840,6 +840,8 @@ the `RuntimeDefault` seccomp profile, and no Kubernetes token (Workload Identity
 volume. **Not verified**: the `--overrides` JSON of `kubectl run` (that the container entry is merged into the generated one by its name, which `kubectl run` gives the pod's name), that the image's
 user 65532 exists, and that your cluster's policies let the pod run. If the pod does not start for one of those reasons, say so in a change to this guide; do not drop the hardening to make it start.
 
+**The pods' network is not limited.** `kubectl run` labels a pod `run=<its name>`, and none of the chart's NetworkPolicies selects that label (the hub's selects `app.kubernetes.io/name: lanekeeper-hub`, the Jobs' selects `lanekeeper-hub-jobs`), so a pod of 10.2 or 10.3 can reach anything its node can, while it holds a signing role. It lives for the minutes of one step. **Not verified**: what a policy for it should allow (DNS, the metadata server and the Cloud KMS API are what it needs; the repository gives none, and the FQDN policy is the hub's). Do not give it the Jobs' label to close the gap: the Jobs' policy does not allow the metadata server or the KMS API, so `ca-init` would fail, and the database's policy admits that label on 5432. Keep the pods short-lived, run the steps when nothing else needs the namespace, and delete a pod as soon as it has finished (the commands do).
+
 10.2 Run `hub ca-init` for the agent CA: give the temporary account its two roles on the agent key, run the pod, take the roles off. The image's entry point is the `hub` binary,
 so the arguments start with `ca-init`. The options are from the README: `--kms-ref` is the key **version**, `--common-name` is for people, and `--valid-days` is 1 to 3650 and is the date
 you must renew the CA by.
@@ -864,7 +866,7 @@ kubectl -n lanekeeper delete pod ca-init-agent
 
 Leave out `imagePullSecrets` if the packages are public. The `sed` keeps only the certificate: the command prints its own messages on standard error, and the log merges the two.
 
-Take the two roles off the agent key **before 10.3, whether the pod succeeded or not**. If it failed, fix the cause (see "If not") and begin 10.2 again.
+Take the two roles off the agent key **before 10.3, whether the pod succeeded or not**. If it failed, fix the cause (see "If not"), **delete the failed pod** (`kubectl -n lanekeeper delete pod ca-init-agent`: `kubectl run` stops with `AlreadyExists` while it is there, and the pod also still runs as the account) and begin 10.2 again.
 
 Source: `deploy/charts/gcp/README.md`, step 4 ("remove-iam-policy-binding"). **Not verified**: the exact commands.
 
@@ -875,7 +877,7 @@ for role in roles/cloudkms.publicKeyViewer roles/cloudkms.signerVerifier; do
 done
 ```
 
-10.3 The same for the replica CA, with its own key, key version and name: its two roles on the replica key, the pod, and the roles off.
+10.3 The same for the replica CA, with its own key, key version and name: its two roles on the replica key, the pod, and the roles off. After a failed pod, delete it (`kubectl -n lanekeeper delete pod ca-init-replica`) before you begin again.
 
 Source and **Not verified**: as 10.2.
 
@@ -928,6 +930,7 @@ and its Workload Identity binding exist until you remove them. A command that na
 Source: `deploy/charts/gcp/README.md`, step 4 ("remove-iam-policy-binding"). **Not verified**: the other commands.
 
 ```bash
+kubectl -n lanekeeper delete pod ca-init-agent ca-init-replica --ignore-not-found
 kubectl -n lanekeeper delete serviceaccount <CA_INIT_KSA>
 for key in <AGENT_CA_KEY_NAME> <REPLICA_CA_KEY_NAME>; do
   for role in roles/cloudkms.publicKeyViewer roles/cloudkms.signerVerifier; do
@@ -1213,14 +1216,16 @@ The first command runs from an address in `<USERS_RANGES>`. The second too: the 
 | Events | `push`, and `pull_request`. Every other event is acknowledged and ignored. `ping` answers 200 |
 | SSL verification | on |
 
-Do not print the secret to the terminal: the scrollback and the shell's history keep it. Read it into a file only you can read, paste it from there into GitHub's field, and remove the file.
+Do not print the secret to the terminal: the scrollback and the shell's history keep it. Read it into a file only you can read, in a **new private directory** and not in the directory you are in (that may be a checkout of this repository, where the file is one `git add .` away from a commit), paste it from there into GitHub's field, and remove the file and the directory.
 
 Source: `crates/hub-platform/src/git/webhook.rs` for what the hub does with each event. **Not verified**: the `gcloud` flags, and that `shred` removes the file on your file system (it may not on a journaled one or on an SSD).
 
 ```bash
-(umask 077; gcloud secrets versions access latest --secret=github-webhook-secret --project=<PROJECT_ID> > webhook-secret.txt)
-# open webhook-secret.txt in an editor that keeps no copy, copy the one line into GitHub's Secret field, close it, then:
-shred -u webhook-secret.txt
+dir="$(umask 077; mktemp -d)"
+(umask 077; gcloud secrets versions access latest --secret=github-webhook-secret --project=<PROJECT_ID> > "$dir/webhook-secret.txt")
+# open "$dir/webhook-secret.txt" in an editor that keeps no copy, copy the one line into GitHub's Secret field, close it, then:
+shred -u "$dir/webhook-secret.txt"
+rm -r "$dir"
 ```
 
 Without a webhook, the hub polls every 60 seconds (Q28).
