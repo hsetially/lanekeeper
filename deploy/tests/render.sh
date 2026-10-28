@@ -460,6 +460,11 @@ planted_hardening() {
     plant "envFrom a ConfigMap in the hub" hub kind 's/^( *)- name: hub$/&\n\1  envFrom:\n\1    - configMapRef: {name: evil}/' "StatefulSet/lanekeeper-hub, container hub: envFrom"
     plant "envFrom a Secret in the hub" hub prod 's/^( *)- name: hub$/&\n\1  envFrom:\n\1    - secretRef: {name: evil}/' "StatefulSet/lanekeeper-hub, container hub: envFrom"
 
+    # 09/fix, round 1 (NB-9): three settings that turn on what the design has not confirmed are kept off by the schema; the policy keeps them off the pod.
+    plant "the MCP notify list in the hub" hub prod 's/^( *)- name: LK_WEB_DIST$/\1- name: LK_MCP_NOTIFY_SERVICES\n\1  value: csp-configuration-server\n&/' "LK_MCP_NOTIFY_SERVICES is withheld from every environment"
+    plant "blob retention in the hub" hub prod 's/^( *)- name: LK_WEB_DIST$/\1- name: LK_RETENTION_ENABLED\n\1  value: "true"\n&/' "LK_RETENTION_ENABLED is withheld from every environment"
+    plant "the retention dry run in the hub" hub kind 's/^( *)- name: LK_WEB_DIST$/\1- name: LK_RETENTION_DRY_RUN\n\1  value: "true"\n&/' "LK_RETENTION_DRY_RUN is withheld from every environment"
+
     # 09/fix, P1, P2: where the other replicas dial this one.
     plant "the replica address in the contract's example service" hub kind 's/lanekeeper-hub-replicas\.lanekeeper\.svc:8445/lanekeeper-hub.lanekeeper.svc:8445/' "LK_REPLICA_ADDRESS is"
     plant "the replica address in another namespace" hub kind 's/lanekeeper-hub-replicas\.lanekeeper\.svc:8445/lanekeeper-hub-replicas.other.svc:8445/' "LK_REPLICA_ADDRESS is"

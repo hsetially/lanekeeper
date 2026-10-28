@@ -1128,3 +1128,37 @@ test_another_secret_is_not_the_migrators if {
 	msgs := deny with input as planted
 	count([m | some m in msgs; contains(m, "migrator")]) == 0
 }
+
+# ============================================================================================================================
+# 09/fix, round 1 of the review (NB-9): three settings are kept off by the closed values schema alone. Each turns on something the design has
+# not confirmed, so a StatefulSet that carries one is refused in every environment, whatever put it there.
+# ============================================================================================================================
+
+test_deny_mcp_notify_services_in_the_hub if {
+	refused(env_add({"name": "LK_MCP_NOTIFY_SERVICES", "value": "csp-configuration-server"}), "LK_MCP_NOTIFY_SERVICES")
+}
+
+test_deny_retention_enabled_in_the_hub if {
+	refused(env_add({"name": "LK_RETENTION_ENABLED", "value": "true"}), "LK_RETENTION_ENABLED")
+}
+
+test_deny_retention_dry_run_in_the_hub if {
+	refused(env_add({"name": "LK_RETENTION_DRY_RUN", "value": "true"}), "LK_RETENTION_DRY_RUN")
+}
+
+# Even a value that looks like off: the setting is not the pod's to carry.
+test_deny_retention_enabled_set_to_false_in_the_hub if {
+	refused(env_add({"name": "LK_RETENTION_ENABLED", "value": "false"}), "LK_RETENTION_ENABLED")
+}
+
+# LK_MCP_AUTH is a legitimate setting (oauth or personal_token), and is not pinned.
+test_mcp_auth_is_a_setting_the_hub_may_carry if {
+	planted := env_add({"name": "LK_MCP_AUTH", "value": "personal_token"})
+	msgs := deny with input as planted
+	count([m | some m in msgs; contains(m, "LK_MCP_AUTH")]) == 0
+}
+
+test_deny_a_withheld_setting_in_the_migration_job if {
+	planted := job_add(migrate, concat("", [job_c, "env/-"]), {"name": "LK_RETENTION_ENABLED", "value": "true"})
+	refused(planted, "LK_RETENTION_ENABLED")
+}

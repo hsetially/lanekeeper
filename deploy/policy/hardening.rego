@@ -270,6 +270,21 @@ deny contains msg if {
 	msg := sprintf("%s, container %s: %s is a variable of the Jobs; the serving hub does not carry it (HARDENING.md)", [lk.who(sts), c.name, e.name])
 }
 
+# Three settings of the hub turn on something the design has not confirmed. LK_MCP_NOTIFY_SERVICES names the Deployments that the MCP tools
+# may ask the config-server to reload, through its unauthenticated /update-resources (Q37); LK_RETENTION_ENABLED and LK_RETENTION_DRY_RUN
+# switch on the deletion of blobs (D116, D118). The chart's closed values schema keeps them out of config.tuning, and this keeps them out of
+# the StatefulSet in every environment, whatever put them there: a patched chart, a post-renderer or a hand edit. (The Jobs' allowlist
+# refuses them already.) LK_MCP_AUTH is a legitimate setting, oauth or personal_token, and is not pinned.
+withheld_variables := {"LK_MCP_NOTIFY_SERVICES", "LK_RETENTION_ENABLED", "LK_RETENTION_DRY_RUN"}
+
+deny contains msg if {
+	some sts in lk.hub_statefulsets
+	some c in sts.spec.template.spec.containers
+	some e in object.get(c, "env", [])
+	e.name in withheld_variables
+	msg := sprintf("%s, container %s: %s is withheld from every environment: it turns on something the design has not confirmed (Q37, D116, D118), and a person decides that in docs/decisions.md first (README item 7)", [lk.who(sts), c.name, e.name])
+}
+
 # The users' name and Google's: LK_PUBLIC_ORIGIN is the origin a request may name in Origin and the host Entra sends the browser back
 # to; LK_HUB_AUDIENCE is what agents ask Google for a token for. The chart derives both from gateway.hostname, so they cannot diverge, and
 # the Gateway serves the same name.
