@@ -580,3 +580,49 @@ gcp chart, Cloud Armor included, passes lint, kubeconform, the policies, the sco
 - The `lanekeeper.io/purpose` label of the checkpoint key is `audit-checkpoint-signing`, not `audit-checkpoint`: the bucket has that value, and `render.sh` finds documents by this label.
 - `iam.rego` now reads `member`, `role` and the reference from the document's root, so a binding whose `spec:` is empty is refused (it was skipped before). `.github/workflows/deploy.yml` also runs for
   `crates/hub-writes/src/config.rs` and `crates/hub-mcp/src/auth/pat.rs`, which `render.sh contract` now reads.
+
+---
+
+## Status (written after the two fix commits of 2026-10-28, the install guide)
+
+`C7` is `1f8fe02` (`09/fix: deploy/INSTALL-GKE.md, the step-by-step install guide`), `C8` is `99a00b9` (`09/fix: the install guide's drift test`). The test was written first and
+seen red (no guide: ENOENT), then the guide. Nothing under `crates/`, `docs/`, `proto/` or `perf/budgets.toml` and no chart or policy was changed.
+
+### Closed
+
+| Item | Commit | How it is shown |
+|---|---|---|
+| Section 9, last bullet: "there is no install guide" | C7 | `deploy/INSTALL-GKE.md`: steps 0 to 17 (why, commands, what you should see, what to do if not) and step 18, the known gaps. Linked from the top of `deploy/argocd/README.md` and `deploy/ADDING-A-SWIMLANE.md` |
+| What section 9 said to document and not render: the Entra registration, the first administrators, the web certificate and key, the webhook, the read-only credential, the order of a first deployment, the Teams secrets | C7 | steps 9, 8, 12.4, 13.4, 8.3, the order of the steps with its reasons (step 0, "The pull requests come in rounds"), and 8.5 |
+| The guide cannot drift from the repository | C8 | `.github/scripts/install-guide.test.mjs`, 31 tests: paths, `just` recipes, `LK_*` names, the ten secrets, chart value paths, step numbers and the four labels, a "Not verified" or "Source:" line before every `gcloud` block, placeholders, no real-looking identifier, the known gaps, the links, the workflow triggers. 26 mutants of a copy of the real guide, each caught by its own rule; 14 more as files (`LK_INSTALL_GUIDE=`); each rule neutralised in turn makes its mutants fail. New recipe `install-guide-test`, part of `deploy-check`; `deploy.yml` and `ci.yml` run when the guide or what the test reads changes |
+| The values tables of the guide are the charts' | C7 (checked, not committed) | the hub chart rendered with only the values of table 12.5, then without each required one (all but `gateway.securityPolicyName`, which has a default, are refused, and the table's last column says so); the agent chart rendered with only table 15.2, and refuses the config-server in the agent's own namespace |
+
+Checks at this HEAD, each run on the committed tree: `node --test .github/scripts/*.test.mjs` 205 of 205 (174 + 31); `just ci-lint` exit 0 (35 shell scripts); `deploy/tests/render.sh lint`
+exit 0; `conftest verify --policy deploy/policy` 1309 of 1309. `render.sh planted` and `policy` were not run (a person was running them). `cargo test -p hub --test justfile_gate` was not run: the link step
+ran out of disk, and what was built was removed; the test reads only the `verify-*`, `platform-*`, `hub-*` and `dev` recipes, and none was changed.
+
+### Found while writing the guide, for a person (nothing was changed for them)
+
+- **`hub ca-init` cannot be run "by a person" on a laptop.** `crates/hub/README.md`, `crates/hub/HARDENING.md` and `deploy/charts/gcp/README.md` (step 4, `--member=user:<you>`) have a person run it with an
+  identity that holds `roles/cloudkms.publicKeyViewer` and `signerVerifier`. The hub binary gets its Google token only from the metadata server (`crates/hub-platform/src/gcp/token.rs`,
+  `Edges::google_kms`), so it works only where a metadata server answers for such a service account. The guide runs it as a one-off pod with a temporary service account (step 10) and says that the
+  route is not documented by the repository. The README and the gcp README should say so, and whether `signerVerifier` also covers reading the public key is not verified.
+- **`mcp-token-hmac-key` must be base64url without padding.** `crates/hub-mcp/src/auth/token.rs` decodes with `URL_SAFE_NO_PAD`; the README says "base64url". The login cookie key
+  (`crates/hub-identity/src/oidc/login.rs`) takes either. The guide makes both without padding.
+- **`deploy/policy/argocd.rego` names one repository** (`repo_url`) and requires every Application and project to use it, and the image names in the values start with its lower-cased name. Installing from
+  another repository means changing the policy, the Application files, the projects and the planted cases of `render.sh` together.
+- **Q21 lists three Entra registrations** (web app, hub API, Cursor); the hub README item 10 has one registration that also exposes the API, with Cursor's client id pre-authorised. The guide follows the README.
+- **Not defined by any file:** the roles of Config Connector's Google service account; how Argo CD is installed and gets read access; which of the cluster features of step 2 a given GKE version has; the
+  web certificate's issuer, names and renewal; a procedure to run `hub seed --dry-run` in the cluster (the chart's seed Job has no dry-run mode). All are in step 18.
+
+### Assumptions made
+
+- The pull requests are in two rounds (A: hook ranges, gcp and db values; B: hub values), each followed by a `targetRevision` change, because a commit cannot name itself. Round A's merge is what
+  publishes the first images, so the CI key, its identity and the repository variables are made before it (step 6), and the hub values need the digests and the key versions that A makes.
+- The CMEK keys of the buckets, the disks and the secrets, and the CI signing key, are made by hand in a ring of their own (`<CMEK_RING>`), not in the ring the gcp chart makes: the chart's buckets need
+  their keys at the first sync, and a ring cannot be deleted once made.
+- One CI signing key serves every environment (images are signed once, by `images.yml`), so each environment's `gcp:binaryAuthorization.publicKeys` lists its public half.
+- The agent's namespace is `lanekeeper` (the swimlane Application's destination) and the config-server's is a value of the swimlane; the guide says again that they must differ.
+- The guide gives `gcloud`, `kubectl run --overrides`, Compute Engine, Workload Identity Federation, Entra and GitHub steps from memory where no file has them, each marked Not verified, and the test
+  requires the mark before every `gcloud` block. A reader who finds one wrong should fix the guide and not trust the next.
+- The test lists the files whose change must start it in `ci.yml` and `deploy.yml`; a file that the guide names and nobody lists is caught on the next push to `main` (`ci.yml` has no path filter there).
