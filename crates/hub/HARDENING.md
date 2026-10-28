@@ -144,7 +144,7 @@ spec:
       valueFrom:
         fieldRef: {fieldPath: metadata.name}
     - name: LK_REPLICA_ADDRESS
-      value: $(LK_REPLICA_NAME).lanekeeper-hub.lanekeeper.svc:8445
+      value: $(LK_REPLICA_NAME).lanekeeper-hub-replicas.lanekeeper.svc:8445
     - name: LK_HUB_AUDIENCE
       value: https://<hub hostname>
     - name: LK_AGENT_ENDPOINT_HOSTS
@@ -213,9 +213,15 @@ spec:
 ```
 
 **Probes.** Start-up is budgeted at 10 s (P11), and the startup probe allows 60 s (30 tries, 2 s apart) so that a slow node is
-not a crash loop. It asks `/healthz`, which does not depend on the database: a database outage must never look like a failed
-start, and the liveness probe does not begin until the start has succeeded. `/readyz` is readiness only, and it is also what
-the users' load balancer's health check asks.
+not a crash loop. It asks `/healthz`. The hub binds the operations socket first but serves it last (`process.rs`, `serve_hub`),
+so `/healthz` answers only when the whole start has finished: the database connected and its schema checked, the web certificate
+loaded and both CAs set up (in parallel), then the platform, sign-in, the audit checkpoint verifier, the write paths and the MCP
+server, six steps in a row that are each bounded by `LK_START_TIMEOUT_SECS` (8). A start that cannot reach the database, Secret
+Manager or KMS is therefore not a probe that fails but an exit 1 and a restart, with the step named in the log, and the chart
+refuses a `LK_START_TIMEOUT_SECS` for which six steps in a row would outlast the 60 s. Once it answers, `/healthz` asks nothing of
+the database or of anything else (it says that the process is up), so a database outage after the start never fails it and never
+restarts the pod; the liveness probe does not begin until the start has succeeded. `/readyz` is readiness only (the database, the
+schema, the certificates, the mirrors), and it is also what the users' load balancer's health check asks.
 
 `LK_TRUSTED_PROXY_HOPS` is 2 behind Google's external HTTPS load balancer, which appends the client address and then its own
 (`client_ip.rs` counts from the right). The value must be re-checked whenever the path to the hub changes.
@@ -413,6 +419,10 @@ The Job's variables are the Job's alone. `tests/hardening.rs` fails if the hub p
 `LK_MIGRATE_TIMEOUT_SECS`, and its volume allowlist already refuses a pod that mounts a fifth volume, so the migrator's credential
 cannot be in a serving pod. How to run the command, and what it refuses, is in `README.md`.
 
+Both Jobs' pods carry the label `app.kubernetes.io/name: lanekeeper-hub-jobs`, not the hub's: the hub's NetworkPolicy selects the
+hub's label and would give a Job the hub's network (the other replicas, the metadata server, the external hosts), and the Jobs' own
+NetworkPolicy and the database's admission rule both select this label.
+
 ### The seed Job
 
 The rows that say which Google service account may join as which swimlane's agent, or as which NFS VM's sentinel, are written by
@@ -441,7 +451,11 @@ a mount other than the four above. `LK_SEED_TIMEOUT_SECS` is the Job's alone: `t
 a change of who may join, and is reviewed as one. It is validated (a service account must be a `*.gserviceaccount.com` address, in
 lower case: a person's address is refused), it never deletes, `--dry-run` shows the exact change first, and every changed row is one
 audit event with the SHA-256 of the file. The residual risk: the operator who ran the Job is not in the event (the actor is the
-component), so the hash and the Job's own record (who started it, from which `ConfigMap`) are how a change is traced to a person.
+component), and Argo CD, not a person, creates the Job. A change is traced to a person through the hash, the seed Job (its name
+carries a hash of its pod template, the revision and the file; it names the `ConfigMap` it read, which the chart keeps beside it)
+and the commit that moved the Application's `targetRevision`. The chart keeps the old Jobs and their `ConfigMap`s
+(`argocd.argoproj.io/sync-options: Prune=false`), because the hub's Application prunes and the record would go with them; they
+accumulate by design, and a person removes the ones no longer needed.
 
 ### Where the hub writes
 

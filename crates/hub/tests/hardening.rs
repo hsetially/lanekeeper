@@ -475,8 +475,8 @@ fn container_problems(container: &Value) -> Vec<String> {
             problems.push(format!("resources.{section}.{field} is not set"));
         }
     }
-    // The startup probe asks /healthz, which does not depend on the database, so a database outage never looks like a failed
-    // start and the liveness probe never judges a slow start (P11; plan 09 T3).
+    // The startup probe asks /healthz, which answers only when the whole start has finished and then asks nothing of the database,
+    // so a database outage after the start never fails it and the liveness probe never judges a slow start (P11; plan 09 T3).
     if container["startupProbe"]["httpGet"]["path"] != "/healthz"
         || container["startupProbe"]["httpGet"]["port"] != "ops"
     {
