@@ -55,7 +55,7 @@ Every requirement here is mandatory. Prompts cite these IDs, and the reviewer ag
 
 - **S11 Input validation.**
   - Typed parsers for `NfsPath`, `CompareRef` and path mappings.
-  - Request bodies are capped at 4 MiB, and JSON nesting depth is limited.
+  - Request bodies are capped at 4 MiB, and JSON nesting depth is limited. Two routes take more, by decision D137: the file-edit routes `PUT /api/v1/swimlanes/{id}/files` and `POST /api/v1/drafts` accept up to 12 MiB + 64 KiB, and only from a signed-in, active user with at least the Editor role. Any other caller is capped at 4 MiB on those two routes as well, and at most 8 such large bodies are read at once per replica. The GitHub webhook is capped at 1 MiB.
   - Query parameters are bounded, and pagination is mandatory.
   - User-supplied regexes are compiled with the Rust `regex` engine, which runs in linear time, with size and DFA limits.
   - Uploads must be UTF-8 Markdown, at most 2 MiB.
