@@ -468,7 +468,8 @@ chart refuses a name that does not), made with `kubectl create` and never edited
 still points at the file it applied. Nothing alerts when one is edited or deleted.
 
 **A revision only moves forward, a revert included.** The old Job is kept and its name is a pure function of the pod template, the
-revision, the file and the tries, so a revision that is used again names a Job that has already run: Argo CD finds it complete and
+revision, the file and the tries, so a revision that is used again names a Job that has already run (when the image and the rest of the pod template are the same as then,
+as they are for a revert made soon after the change): Argo CD finds it complete and
 the Application `Synced`, `hub seed` does not run, and the hub keeps the rows of the later file while Git shows the earlier one.
 The rows decide who may join as a swimlane's agent (S5). A revert is a new revision with the old file, in a new ConfigMap. A
 template cannot see the revisions that came before, so the chart cannot refuse one that was used: `seed.revision` is a positive

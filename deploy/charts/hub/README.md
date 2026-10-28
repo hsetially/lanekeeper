@@ -117,7 +117,8 @@ with pruning disabled while an old Job exists. The first change of the seed is t
    configmap` has no flag for it, so it takes a manifest).
 2. **A revision only moves forward, a revert included.** `seed.revision` is a positive integer (the schema says so). The Job's name is a
    hash of it, and an old Job is kept, so a revision used again, which is what a revert to an earlier seed does if it also sets the revision
-   back, names a Job that has already run. Argo CD finds it complete and the Application `Synced`, and `hub seed` does not run: the hub keeps the
+   back, names a Job that has already run (when the image and the rest of the pod template are also the same as then, which they are for a
+   revert made soon after the change; after an image change the name differs, and a revert would run, which is luck and not a rule). Argo CD finds it complete and the Application `Synced`, and `hub seed` does not run: the hub keeps the
    row of the later file while Git shows the earlier one, and the rows decide who may join as a swimlane's agent (S5). A revert is a new
    revision with the old file: a new ConfigMap (`...-4`) that holds the earlier file, and `revision: 4`. A template cannot see the revisions
    that came before, so the chart cannot refuse a revision that was used; this paragraph and the schema's counter are the guard, and reviewing
