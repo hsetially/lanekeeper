@@ -197,7 +197,7 @@ gs_key(name) := concat("", ["projects/example-project/locations/example-location
 
 gs_labels(purpose) := {
 	"app.kubernetes.io/name": "lanekeeper-gcp",
-	"app.kubernetes.io/instance": "lanekeeper",
+	"app.kubernetes.io/instance": "lanekeeper-gcp",
 	"app.kubernetes.io/part-of": "lanekeeper",
 	"lanekeeper.io/purpose": purpose,
 	"lanekeeper.io/environment": "prod",

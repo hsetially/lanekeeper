@@ -253,6 +253,71 @@ test_deny_a_secret_with_the_fallback_marker_holding_something_else if {
 	refused(planted, "lanekeeper.io/cmek must be fallback")
 }
 
+# 09/fix, round 2 of the review (NB-3): an allowed KEY can still hold a value. The values are the chart's own: the standard labels are
+# fixed (the release is the Argo CD Application's name, argocd.rego), the chart label is `lanekeeper-gcp-<semver>`, the project is a project
+# id and the one the key ring is in, and nothing in the metadata but the four fields the chart writes.
+test_deny_a_secret_whose_instance_label_holds_a_value if {
+	refused(fixtures.gs_secret_set(secret_name, "/metadata/labels/app.kubernetes.io~1instance", "hunter2"), "app.kubernetes.io/instance is \"hunter2\"")
+}
+
+test_deny_a_secret_whose_name_label_holds_a_value if {
+	refused(fixtures.gs_secret_set(secret_name, "/metadata/labels/app.kubernetes.io~1name", "hunter2"), "app.kubernetes.io/name is \"hunter2\"")
+}
+
+test_deny_a_secret_whose_part_of_label_holds_a_value if {
+	refused(fixtures.gs_secret_set(secret_name, "/metadata/labels/app.kubernetes.io~1part-of", "hunter2"), "app.kubernetes.io/part-of is \"hunter2\"")
+}
+
+test_deny_a_secret_whose_managed_by_label_holds_a_value if {
+	refused(fixtures.gs_secret_add(secret_name, "/metadata/labels/app.kubernetes.io~1managed-by", "hunter2"), "app.kubernetes.io/managed-by is \"hunter2\"")
+}
+
+test_deny_a_secret_whose_chart_label_holds_a_value if {
+	refused(fixtures.gs_secret_add(secret_name, "/metadata/labels/helm.sh~1chart", "hunter2"), "helm.sh/chart is \"hunter2\"")
+}
+
+test_deny_a_secret_whose_chart_label_has_a_suffix_that_holds_a_value if {
+	refused(fixtures.gs_secret_add(secret_name, "/metadata/labels/helm.sh~1chart", "lanekeeper-gcp-0.1.0-hunter2"), "helm.sh/chart is")
+}
+
+test_deny_a_secret_whose_project_annotation_holds_a_value if {
+	refused(fixtures.gs_secret_set(secret_name, "/metadata/annotations/cnrm.cloud.google.com~1project-id", "Hunter 2"), "is not a Google project id")
+}
+
+# A word that has the shape of a project id is still not the project of the key ring that the same chart makes.
+test_deny_a_secret_in_another_project_than_the_key_ring if {
+	refused(fixtures.gs_secret_set(secret_name, "/metadata/annotations/cnrm.cloud.google.com~1project-id", "hunter2"), "the key ring is in the project")
+}
+
+test_deny_a_secret_in_another_namespace_than_the_key_ring if {
+	refused(fixtures.gs_secret_set(secret_name, "/metadata/namespace", "hunter2"), "namespace")
+}
+
+test_deny_a_secret_whose_deletion_policy_holds_a_value if {
+	refused(fixtures.gs_secret_set(secret_name, "/metadata/annotations/cnrm.cloud.google.com~1deletion-policy", "abandon-hunter2"), "deletion-policy: abandon")
+}
+
+test_deny_a_secret_whose_sync_options_hold_a_value if {
+	refused(fixtures.gs_secret_set(secret_name, "/metadata/annotations/argocd.argoproj.io~1sync-options", "Prune=false,hunter2"), "Prune=false")
+}
+
+test_deny_a_secret_with_a_finalizer if {
+	refused(fixtures.gs_secret_add(secret_name, "/metadata/finalizers", ["hunter2"]), "metadata.finalizers")
+}
+
+test_deny_a_secret_with_a_generate_name if {
+	refused(fixtures.gs_secret_add(secret_name, "/metadata/generateName", "hunter2"), "metadata.generateName")
+}
+
+test_deny_a_secret_with_an_owner_reference if {
+	planted := fixtures.gs_secret_add(secret_name, "/metadata/ownerReferences", [{"apiVersion": "v1", "kind": "ConfigMap", "name": "hunter2", "uid": "hunter2"}])
+	refused(planted, "metadata.ownerReferences")
+}
+
+test_deny_a_secret_with_a_field_of_its_own_outside_metadata_and_spec if {
+	refused(fixtures.gs_secret_add(secret_name, "/data", {"value": "hunter2"}), "top-level field data")
+}
+
 # Everything the chart writes on a secret passes: the standard labels (with managed-by and the chart's), the project, the two keep
 # annotations and the fallback marker.
 test_a_secret_with_every_key_the_chart_writes_passes if {

@@ -241,6 +241,96 @@ deny contains msg if {
 	msg := sprintf("%s: metadata.annotations.%s is not an annotation a secret container carries (%v); an annotation is readable by anyone who can list secrets, and is no place for a value (S7)", [lk.who(s), key, sort(allowed_secret_annotations)])
 }
 
+# The VALUES of the allowed keys are held as well: a key from the list can carry a value as easily as one that is not on it. The standard labels
+# are the chart's own, fixed: the release is the name of the Argo CD Application (argocd.rego holds helm.releaseName to it, and the gcp
+# Application is lanekeeper-gcp), the chart label is its name and a version, and the project is a project id and the key ring's. The
+# deletion-policy, the sync-options and the fallback marker are compared whole (rules above and below). Nothing else is in the metadata
+# (a finalizer, a generateName or an owner reference is a free string that the chart does not write) or outside it and the spec.
+fixed_secret_labels := {
+	"app.kubernetes.io/name": "lanekeeper-gcp",
+	"app.kubernetes.io/instance": "lanekeeper-gcp",
+	"app.kubernetes.io/part-of": "lanekeeper",
+	"app.kubernetes.io/managed-by": "Helm",
+}
+
+chart_label_pattern := `^lanekeeper-gcp-[0-9]+\.[0-9]+\.[0-9]+$`
+
+project_id_pattern := `^[a-z][a-z0-9-]{4,28}[a-z0-9]$`
+
+allowed_secret_metadata := {"name", "namespace", "labels", "annotations"}
+
+allowed_secret_fields_outside_metadata := {"apiVersion", "kind", "metadata", "spec"}
+
+deny contains msg if {
+	some s in secrets
+	some key, want in fixed_secret_labels
+	got := s.metadata.labels[key]
+	got != want
+	msg := sprintf("%s: the label %s is %q and the chart writes %q; a label is readable by anyone who can list secrets, and its value is no place for anything else (S7)", [lk.who(s), key, got, want])
+}
+
+deny contains msg if {
+	some s in secrets
+	got := s.metadata.labels["helm.sh/chart"]
+	not is_string(got)
+	msg := sprintf("%s: the label helm.sh/chart is not text (S7)", [lk.who(s)])
+}
+
+deny contains msg if {
+	some s in secrets
+	got := s.metadata.labels["helm.sh/chart"]
+	is_string(got)
+	not regex.match(chart_label_pattern, got)
+	msg := sprintf("%s: the label helm.sh/chart is %q; the chart writes lanekeeper-gcp- and its version, three numbers, and nothing after it (S7)", [lk.who(s), got])
+}
+
+deny contains msg if {
+	some s in secrets
+	got := s.metadata.annotations["cnrm.cloud.google.com/project-id"]
+	not is_string(got)
+	msg := sprintf("%s: the annotation cnrm.cloud.google.com/project-id is not text (S7)", [lk.who(s)])
+}
+
+deny contains msg if {
+	some s in secrets
+	got := s.metadata.annotations["cnrm.cloud.google.com/project-id"]
+	is_string(got)
+	not regex.match(project_id_pattern, got)
+	msg := sprintf("%s: the annotation cnrm.cloud.google.com/project-id is %q, which is not a Google project id (6 to 30 lower case letters, digits and hyphens, starting with a letter); an annotation is readable by anyone who can list secrets (S7)", [lk.who(s), got])
+}
+
+# The shape of a project id is not enough (a short word has it): the secrets are in the project of the key ring that the same chart makes, and in its
+# namespace.
+deny contains msg if {
+	some s in secrets
+	some r in rings
+	got := s.metadata.annotations["cnrm.cloud.google.com/project-id"]
+	want := object.get(r.metadata, ["annotations", "cnrm.cloud.google.com/project-id"], "")
+	got != want
+	msg := sprintf("%s: the annotation cnrm.cloud.google.com/project-id is %q, and the key ring is in the project %q; one chart, one project (S7)", [lk.who(s), got, want])
+}
+
+deny contains msg if {
+	some s in secrets
+	some r in rings
+	object.get(s.metadata, "namespace", "") != object.get(r.metadata, "namespace", "")
+	msg := sprintf("%s: the namespace is %q, and the key ring's is %q; one chart, one namespace (S7)", [lk.who(s), object.get(s.metadata, "namespace", ""), object.get(r.metadata, "namespace", "")])
+}
+
+deny contains msg if {
+	some s in secrets
+	some key, _ in s.metadata
+	not key in allowed_secret_metadata
+	msg := sprintf("%s: metadata.%s is set; a secret container's metadata is %v and nothing else, because anything else is a free string that anyone who can list secrets can read (S7)", [lk.who(s), key, sort(allowed_secret_metadata)])
+}
+
+deny contains msg if {
+	some s in secrets
+	some key, _ in s
+	not key in allowed_secret_fields_outside_metadata
+	msg := sprintf("%s: the top-level field %s is set; a secret container is %v and nothing else (S7)", [lk.who(s), key, sort(allowed_secret_fields_outside_metadata)])
+}
+
 deny contains msg if {
 	some s in secrets
 	marker := object.get(s.metadata, ["annotations", "lanekeeper.io/cmek"], "fallback")

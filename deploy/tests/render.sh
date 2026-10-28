@@ -1195,6 +1195,14 @@ planted_gcp_storage() {
     plant "a secret with an annotation that holds a value" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/s#^  annotations:$#&\n    value: hunter2#}' "metadata.annotations.value"
     plant "a secret with a label that holds a value" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/s#^  labels:$#&\n    password: hunter2#}' "metadata.labels.password"
     plant "a secret with the fallback marker holding something else" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/s#^  annotations:$#&\n    lanekeeper.io/cmek: hunter2#}' "lanekeeper.io/cmek must be fallback"
+    # 09/fix, round 2 (NB-3): a key the chart writes can hold a value as well as one it does not; the values are held too.
+    plant "a secret whose instance label holds a value" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/s#(app.kubernetes.io/instance:) .*#\1 hunter2#}' 'app.kubernetes.io/instance is "hunter2"'
+    plant "a secret whose chart label holds a value" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/s#(helm.sh/chart:) .*#\1 "lanekeeper-gcp-0.1.0-hunter2"#}' "helm.sh/chart is"
+    plant "a secret whose project annotation holds a value" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/s#(cnrm.cloud.google.com/project-id:) .*#\1 "hunter2"#}' "the key ring is in the project"
+    plant "a secret in a namespace of another name" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/s#^  namespace: .*#  namespace: hunter2#}' "one chart, one namespace"
+    plant "a secret with a finalizer" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/s#^  annotations:$#  finalizers: ["hunter2"]\n&#}' "metadata.finalizers"
+    plant "a secret with a generateName" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/s#^  namespace: .*#&\n  generateName: hunter2#}' "metadata.generateName"
+    plant "a secret with an owner reference" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/s#^  namespace: .*#&\n  ownerReferences:\n    - {apiVersion: v1, kind: ConfigMap, name: hunter2, uid: hunter2}#}' "metadata.ownerReferences"
     plant "a key of the secrets that Secret Manager may not use" gcp-storage prod 's#gcp-sa-secretmanager#compute-system#' "no IAMPolicyMember grants the Secret Manager service agent"
     plant_append "a secret version, which holds a value" gcp-storage prod $'apiVersion: secretmanager.cnrm.cloud.google.com/v1beta1\nkind: SecretManagerSecretVersion\nmetadata:\n  name: write-preview-key-1\n  namespace: lanekeeper-gcp\nspec:\n  secretRef: {name: write-preview-key}\n  secretData: {value: aHVudGVyMg==}' "never a value"
     plant_append "a Kubernetes Secret in the cloud chart" gcp-storage prod $'apiVersion: v1\nkind: Secret\nmetadata:\n  name: write-preview-key\n  namespace: lanekeeper-gcp\nstringData:\n  value: hunter2' "charts render no Secret"
