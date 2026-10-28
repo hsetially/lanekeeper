@@ -1,7 +1,8 @@
 {{- /*
 The Google service accounts of the hub and the database, what each may do, and the keys that Google's own services may use
-(09/T5; S5, S7, S9, S10). One role on one resource for each binding, to a service account and to nobody else: deploy/policy/iam.rego
-refuses a person, a group, a public member, a basic role, a role on the whole project (but Cloud Trace) and anything not listed there.
+(09/T5, 09/fix I1; S5, S7, S8, S9, S10). One role on one resource for each binding, to a service account and to nobody else:
+deploy/policy/iam.rego refuses a person, a group, a public member, a basic role, a role on the whole project (but Cloud Trace) and anything
+not listed there.
 */ -}}
 {{- $project := required "project is required: the Google Cloud project of the Config Connector resources" .Values.project }}
 {{- $wi := .Values.workloadIdentity }}
@@ -46,9 +47,35 @@ spec:
 # Traces go to Cloud Trace (S10: ids and hashes, never contents). Cloud Trace has no resource smaller than the project.
 {{ include "lanekeeper-gcp.member" (dict "root" . "name" "lanekeeper-hub-trace" "role" "roles/cloudtrace.agent" "member" $hub "ref" (printf "kind: Project\nexternal: projects/%s" $project)) }}
 {{- /*
+  The hub's keys and secrets (09/fix, I1). Each role is on the one key or the one secret it is for, never on the key ring or the project:
+  signerVerifier on the three signing keys (a role on a key covers every version of it, which the audit checkpoint key needs, as its older
+  versions stay enabled), cryptoKeyEncrypterDecrypter on the vault key and on no other, and secretAccessor on each secret the hub reads,
+  one binding each. iam.rego checks each against what the key or the secret is for (labels lanekeeper.io/purpose, set in kms.yaml and
+  secrets.yaml).
+*/}}
+{{- $keyNames := include "lanekeeper-gcp.keyNames" . | fromJson }}
+{{- $keyRef := "apiVersion: kms.cnrm.cloud.google.com/v1beta1\nkind: KMSCryptoKey\nname: %s" }}
+{{- $secretRef := "apiVersion: secretmanager.cnrm.cloud.google.com/v1beta1\nkind: SecretManagerSecret\nname: %s" }}
+---
+# The hub signs the agents' and the sentinels' certificates with the agent CA key, through Cloud KMS, and holds no private key (S5).
+{{ include "lanekeeper-gcp.member" (dict "root" . "name" "lanekeeper-hub-sign-agent-ca" "role" "roles/cloudkms.signerVerifier" "member" $hub "ref" (printf $keyRef $keyNames.agentCa)) }}
+---
+# ... the replicas' certificates with the replica CA key, another key (S5).
+{{ include "lanekeeper-gcp.member" (dict "root" . "name" "lanekeeper-hub-sign-replica-ca" "role" "roles/cloudkms.signerVerifier" "member" $hub "ref" (printf $keyRef $keyNames.replicaCa)) }}
+---
+# ... and each hourly checkpoint of the audit chain with the checkpoint key (S9).
+{{ include "lanekeeper-gcp.member" (dict "root" . "name" "lanekeeper-hub-sign-audit-checkpoint" "role" "roles/cloudkms.signerVerifier" "member" $hub "ref" (printf $keyRef $keyNames.auditCheckpoint)) }}
+---
+# The vault key wraps and unwraps the data key of each stored GitHub token (S8). The one use of an encrypt-and-decrypt role by an account of ours.
+{{ include "lanekeeper-gcp.member" (dict "root" . "name" "lanekeeper-hub-vault" "role" "roles/cloudkms.cryptoKeyEncrypterDecrypter" "member" $hub "ref" (printf $keyRef $keyNames.vault)) }}
+{{- range $name := include "lanekeeper-gcp.secretNames" . | fromJsonArray }}
+---
+{{ include "lanekeeper-gcp.member" (dict "root" $ "name" (printf "lanekeeper-hub-read-%s" $name) "role" "roles/secretmanager.secretAccessor" "member" $hub "ref" (printf $secretRef $name)) }}
+{{- end }}
+{{- /*
   The keys. A bucket is written by the Cloud Storage service agent, and a disk by the Compute Engine service agent, with the key of the
-  bucket or the disk: each agent may use the keys it needs, and the agents are named by the project's number. A key shared by two
-  buckets is granted once.
+  bucket or the disk, and a secret by the Secret Manager service agent, with the key of the secrets (secrets.cmekKey): each agent may use
+  the keys it needs, and the agents are named by the project's number. A key shared by two buckets is granted once.
 */}}
 {{- $bucketKeys := list }}
 {{- range $path, $cfg := dict "buckets.backup" $b.backup "buckets.auditCheckpoint" $b.auditCheckpoint "buckets.docs" $b.docs }}
@@ -59,7 +86,8 @@ spec:
 {{- range $i, $key := .Values.cmek.diskKeys }}
 {{- $diskKeys = append $diskKeys (include "lanekeeper-gcp.key" (list (printf "cmek.diskKeys[%d]" $i) $key $location)) }}
 {{- end }}
-{{- if or $bucketKeys $diskKeys }}
+{{- $secretKey := include "lanekeeper-gcp.key" (list "secrets.cmekKey" .Values.secrets.cmekKey $location "secret") }}
+{{- if or $bucketKeys $diskKeys $secretKey }}
 {{- $number := required "projectNumber is required when a customer-managed key is used: Google's service agents are named by it" .Values.projectNumber }}
 {{- range $key := uniq $bucketKeys }}
 ---
@@ -68,5 +96,11 @@ spec:
 {{- range $key := uniq $diskKeys }}
 ---
 {{ include "lanekeeper-gcp.member" (dict "root" $ "name" (printf "lanekeeper-compute-agent-%s" (trunc 10 (sha256sum $key))) "role" "roles/cloudkms.cryptoKeyEncrypterDecrypter" "member" (printf "serviceAccount:service-%s@compute-system.iam.gserviceaccount.com" $number) "ref" (printf "kind: KMSCryptoKey\nexternal: %s" $key)) }}
+{{- end }}
+{{- if $secretKey }}
+---
+# Secret Manager encrypts the payload of each secret with the key of the secrets, through its own service agent. That agent is made by Google
+# for the project when the service is first used (README.md: not verified here), and it uses this key and no other.
+{{ include "lanekeeper-gcp.member" (dict "root" $ "name" (printf "lanekeeper-secretmanager-agent-%s" (trunc 10 (sha256sum $secretKey))) "role" "roles/cloudkms.cryptoKeyEncrypterDecrypter" "member" (printf "serviceAccount:service-%s@gcp-sa-secretmanager.iam.gserviceaccount.com" $number) "ref" (printf "kind: KMSCryptoKey\nexternal: %s" $secretKey)) }}
 {{- end }}
 {{- end }}

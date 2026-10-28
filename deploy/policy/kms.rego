@@ -1,0 +1,284 @@
+# Keys and secrets policy (09/fix, I1; S5, S7, S8, S9, S10). Run with `conftest test --combine --namespace kms` over the gcp chart's output.
+# The hub holds no private key and no secret value (crates/hub/HARDENING.md); it asks Google for both, with Workload Identity. This chart
+# makes what it asks for, and nothing more:
+#
+#   - a key ring and four Cloud KMS keys. The agent CA, the replica CA and the audit checkpoint keys are asymmetric signing keys on the
+#     P-256 curve; the vault key is a symmetric key that wraps the data keys of the GitHub tokens. Each is used for one thing (the
+#     bindings, in iam.rego, give the hub's account the one role that thing needs on that key), the key material is made by Cloud KMS
+#     and never imported, and removing a resource from Git never destroys a key.
+#   - the Secret Manager secrets the hub reads: containers, never values. A value is put in by a person (the runbook), so no field of
+#     the secret can hold one, and no SecretManagerSecretVersion is rendered.
+package kms
+
+import rego.v1
+
+import data.lk
+
+rings := [r |
+	some r in lk.of_kind("KMSKeyRing")
+	startswith(r.apiVersion, "kms.cnrm.cloud.google.com/")
+]
+
+keys := [k |
+	some k in lk.of_kind("KMSCryptoKey")
+	startswith(k.apiVersion, "kms.cnrm.cloud.google.com/")
+]
+
+secrets := [s |
+	some s in lk.of_kind("SecretManagerSecret")
+	startswith(s.apiVersion, "secretmanager.cnrm.cloud.google.com/")
+]
+
+signing_purposes := {"agent-ca", "replica-ca", "audit-checkpoint-signing"}
+
+key_purposes := {"agent-ca", "replica-ca", "audit-checkpoint-signing", "vault"}
+
+environments := {"staging", "prod"}
+
+key_pattern := `^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+$`
+
+purpose(d) := object.get(d.metadata, ["labels", "lanekeeper.io/purpose"], "")
+
+environment(d) := object.get(d.metadata, ["labels", "lanekeeper.io/environment"], "")
+
+# "the agent-ca key", "a key of no known purpose": what a message calls a key by what it is for.
+what(k) := sprintf("%s (the %s key)", [lk.who(k), purpose(k)]) if purpose(k) in key_purposes
+
+what(k) := sprintf("%s (a key of no known purpose)", [lk.who(k)]) if not purpose(k) in key_purposes
+
+# --- nothing that holds a value --------------------------------------------------------------------------------------------------------
+
+# A secret's value is put in by a person and is never in Git, in a chart or in a policy's input (S7). The kind is refused whatever its group.
+deny contains msg if {
+	some v in lk.of_kind("SecretManagerSecretVersion")
+	msg := sprintf("%s: a secret version holds a value, and this chart makes containers, never a value; a person puts the value in (S7)", [lk.who(v)])
+}
+
+# --- what is kept: nothing here is destroyed by a sync or by deleting its Kubernetes resource ---------------------------------------------
+
+kept := array.concat(rings, array.concat(keys, secrets))
+
+deny contains msg if {
+	some d in kept
+	object.get(d.metadata, ["annotations", "cnrm.cloud.google.com/deletion-policy"], "") != "abandon"
+	msg := sprintf("%s: the annotation cnrm.cloud.google.com/deletion-policy: abandon is missing; removing the resource could destroy the key or the secret and every version in it (S5, S8, S9)", [lk.who(d)])
+}
+
+deny contains msg if {
+	some d in kept
+	object.get(d.metadata, ["annotations", "argocd.argoproj.io/sync-options"], "") != "Prune=false"
+	msg := sprintf("%s: the annotation argocd.argoproj.io/sync-options: Prune=false is missing; a sync could prune the resource (S5, S8, S9)", [lk.who(d)])
+}
+
+# --- the key ring --------------------------------------------------------------------------------------------------------------------
+
+deny contains msg if {
+	some r in rings
+	object.get(r, ["spec", "location"], "") == ""
+	msg := sprintf("%s: it names no location", [lk.who(r)])
+}
+
+ring_names := {r.metadata.name | some r in rings}
+
+# --- the keys: one for each thing they are for ----------------------------------------------------------------------------------------
+
+deny contains msg if {
+	some k in keys
+	not purpose(k) in key_purposes
+	msg := sprintf("%s: the label lanekeeper.io/purpose must be one of %v, and is %q; a binding is checked against what its key is for (S5, S8, S9)", [lk.who(k), sort(key_purposes), purpose(k)])
+}
+
+deny contains msg if {
+	some k in keys
+	not environment(k) in environments
+	msg := sprintf("%s: the label lanekeeper.io/environment must be one of %v, and is %q; the protection level of a prod key is checked against it (S5)", [lk.who(k), sort(environments), environment(k)])
+}
+
+# Exactly one key for each purpose, wherever keys are rendered at all: the two CAs are two keys (an agent's certificate must never be a
+# replica's, S5), and the keys are not shared between purposes.
+deny contains msg if {
+	count(keys) > 0
+	some p in key_purposes
+	count([k | some k in keys; purpose(k) == p]) != 1
+	msg := sprintf("there must be exactly one %s key, and there are %d (S5, S8, S9)", [p, count([k | some k in keys; purpose(k) == p])])
+}
+
+deny contains msg if {
+	some k in keys
+	count([x | some x in keys; x.metadata.name == k.metadata.name]) > 1
+	msg := sprintf("two KMSCryptoKey resources are named %q: one key cannot be for two things (S5)", [k.metadata.name])
+}
+
+deny contains msg if {
+	some k in keys
+	not object.get(k, ["spec", "keyRingRef", "name"], "") in ring_names
+	msg := sprintf("%s: the key ring %q is not in this output; a key is made in the ring this chart makes, named by keyRingRef.name", [what(k), object.get(k, ["spec", "keyRingRef", "name"], "")])
+}
+
+# The signing keys (S5, S9). Cloud KMS signs and the hub never holds the key. The algorithm is the one the hub's code uses for the CAs and
+# the checkpoints (crates/hub/HARDENING.md: EC_SIGN_P256_SHA256); the Config Connector default for a key without a purpose is
+# ENCRYPT_DECRYPT, so the purpose is written out.
+deny contains msg if {
+	some k in keys
+	purpose(k) in signing_purposes
+	object.get(k, ["spec", "purpose"], "") != "ASYMMETRIC_SIGN"
+	msg := sprintf("%s: spec.purpose is %q; it must be ASYMMETRIC_SIGN (the Config Connector default is ENCRYPT_DECRYPT) (S5, S9)", [what(k), object.get(k, ["spec", "purpose"], "")])
+}
+
+deny contains msg if {
+	some k in keys
+	purpose(k) in signing_purposes
+	object.get(k, ["spec", "versionTemplate", "algorithm"], "") != "EC_SIGN_P256_SHA256"
+	msg := sprintf("%s: versionTemplate.algorithm is %q; the hub signs with EC_SIGN_P256_SHA256 and rejects a key of another algorithm (S5, S9)", [what(k), object.get(k, ["spec", "versionTemplate", "algorithm"], "")])
+}
+
+# The hub pins a key version (LK_*_KMS_REF names one), so a new primary version changes nothing it uses. Rotating a signing key is a
+# person's step, with a new certificate for a CA and the old version kept for verifying a checkpoint.
+deny contains msg if {
+	some k in keys
+	purpose(k) in signing_purposes
+	object.get(k, ["spec", "rotationPeriod"], null) != null
+	msg := sprintf("%s: it has a rotationPeriod; the hub pins a key version and a new primary version changes nothing it uses, so a signing key is rotated by a person (S5, S9)", [what(k)])
+}
+
+# The vault key (S8): symmetric, for wrapping the data key of each stored GitHub token. The hub names the key and not a version, so KMS
+# picks the primary version and a rotation changes nothing the hub is told.
+deny contains msg if {
+	some k in keys
+	purpose(k) == "vault"
+	object.get(k, ["spec", "purpose"], "") != "ENCRYPT_DECRYPT"
+	msg := sprintf("%s: spec.purpose is %q; it must be ENCRYPT_DECRYPT (S8)", [what(k), object.get(k, ["spec", "purpose"], "")])
+}
+
+deny contains msg if {
+	some k in keys
+	purpose(k) == "vault"
+	object.get(k, ["spec", "versionTemplate", "algorithm"], "") != "GOOGLE_SYMMETRIC_ENCRYPTION"
+	msg := sprintf("%s: versionTemplate.algorithm is %q; it must be GOOGLE_SYMMETRIC_ENCRYPTION (S8)", [what(k), object.get(k, ["spec", "versionTemplate", "algorithm"], "")])
+}
+
+# Where the key material lives (S5: "the CA key lives in Cloud KMS and is never exported"). Both levels keep it in Cloud KMS; the level is
+# immutable, so it is written out and not left to the default. External keys are not offered. A human relaxes the prod rule, in
+# docs/decisions.md.
+protection_levels := {"HSM", "SOFTWARE"}
+
+deny contains msg if {
+	some k in keys
+	not object.get(k, ["spec", "versionTemplate", "protectionLevel"], "") in protection_levels
+	msg := sprintf("%s: versionTemplate.protectionLevel is %q; it must be one of %v, written out because it cannot be changed afterwards (S5)", [what(k), object.get(k, ["spec", "versionTemplate", "protectionLevel"], ""), sort(protection_levels)])
+}
+
+deny contains msg if {
+	some k in keys
+	environment(k) == "prod"
+	object.get(k, ["spec", "versionTemplate", "protectionLevel"], "") == "SOFTWARE"
+	msg := sprintf("%s: the protection level is SOFTWARE; the keys of prod are HSM in prod (S5)", [what(k)])
+}
+
+# The material is made by Cloud KMS. An imported key was known outside it first, and a key without a first version has no key to read
+# off, so `hub ca-init` has nothing to certify.
+deny contains msg if {
+	some k in keys
+	object.get(k, ["spec", "importOnly"], false) == true
+	msg := sprintf("%s: importOnly is true; the key material must be made by Cloud KMS, not imported, because an imported key was known outside it (S5)", [what(k)])
+}
+
+deny contains msg if {
+	some k in keys
+	object.get(k, ["spec", "skipInitialVersionCreation"], false) == true
+	msg := sprintf("%s: skipInitialVersionCreation is true; the key has no version to name in the hub's settings or to make a CA certificate for", [what(k)])
+}
+
+# --- the secrets: containers, replicated into the chart's location, encrypted with a key of ours ------------------------------------------
+
+deny contains msg if {
+	some s in secrets
+	purpose(s) != "secret"
+	msg := sprintf("%s: the label lanekeeper.io/purpose must be secret, and is %q", [lk.who(s), purpose(s)])
+}
+
+deny contains msg if {
+	some s in secrets
+	not environment(s) in environments
+	msg := sprintf("%s: the label lanekeeper.io/environment must be one of %v, and is %q", [lk.who(s), sort(environments), environment(s)])
+}
+
+# A container has a replication policy and nothing else. Every other field is a way for a value, a lifetime or a notification to get in:
+# a ttl or an expireTime deletes the secret on a date the hub does not know, annotations and labels are readable by anyone who can list
+# secrets, a rotation or a topic starts something that nobody asked for.
+allowed_secret_fields := {"replication"}
+
+deny contains msg if {
+	some s in secrets
+	some field, _ in s.spec
+	not field in allowed_secret_fields
+	msg := sprintf("%s: spec.%s is set; a secret container is its replication and nothing else: no value, no ttl or expiry, no rotation, no topic, no annotation (S7)", [lk.who(s), field])
+}
+
+replicas(s) := object.get(s, ["spec", "replication", "userManaged", "replicas"], [])
+
+deny contains msg if {
+	some s in secrets
+	count(replicas(s)) == 0
+	msg := sprintf("%s: replication.userManaged.replicas is empty or missing; a secret is replicated into the chart's location, with a key of ours in that location (S10)", [lk.who(s)])
+}
+
+deny contains msg if {
+	some s in secrets
+	some r in replicas(s)
+	object.get(r, "location", "") == ""
+	msg := sprintf("%s: a replica names no location", [lk.who(s)])
+}
+
+secret_key(r) := object.get(r, ["customerManagedEncryption", "kmsKeyRef", "external"], "")
+
+secret_fallback(s) if object.get(s.metadata, ["annotations", "lanekeeper.io/cmek"], "") == "fallback"
+
+deny contains msg if {
+	some s in secrets
+	some r in replicas(s)
+	secret_key(r) == ""
+	not secret_fallback(s)
+	msg := sprintf("%s: a replica names no customer-managed key (customerManagedEncryption.kmsKeyRef.external) and the secret is not marked as the fallback (S10)", [lk.who(s)])
+}
+
+deny contains msg if {
+	some s in secrets
+	some r in replicas(s)
+	secret_key(r) != ""
+	not regex.match(key_pattern, secret_key(r))
+	msg := sprintf("%s: %q is not a Cloud KMS key (projects/P/locations/L/keyRings/R/cryptoKeys/K) (S10)", [lk.who(s), secret_key(r)])
+}
+
+warn contains msg if {
+	some s in secrets
+	some r in replicas(s)
+	secret_key(r) == ""
+	secret_fallback(s)
+	msg := sprintf("%s: Google-managed encryption, not a customer-managed key (S10, Q29): set secrets.cmekKey", [lk.who(s)])
+}
+
+# Secret Manager encrypts a payload with the key through its own service agent (created by Google for the project, named by its number):
+# another IAMPolicyMember in the output grants that agent cryptoKeyEncrypterDecrypter on exactly that key.
+secretmanager_agent(member) if regex.match(`^serviceAccount:service-[0-9]+@gcp-sa-secretmanager\.iam\.gserviceaccount\.com$`, member)
+
+key_grants(k) := [m |
+	some m in lk.of_kind("IAMPolicyMember")
+	m.spec.role == "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+	object.get(m, ["spec", "resourceRef", "kind"], "") == "KMSCryptoKey"
+	object.get(m, ["spec", "resourceRef", "external"], "") == k
+	secretmanager_agent(object.get(m, ["spec", "member"], ""))
+]
+
+secret_keys := {secret_key(r) |
+	some s in secrets
+	some r in replicas(s)
+	secret_key(r) != ""
+	regex.match(key_pattern, secret_key(r))
+}
+
+deny contains msg if {
+	some k in secret_keys
+	count(key_grants(k)) == 0
+	msg := sprintf("no IAMPolicyMember grants the Secret Manager service agent cryptoKeyEncrypterDecrypter on %s, so a secret encrypted with it could not be written (S10)", [k])
+}

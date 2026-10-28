@@ -50,6 +50,54 @@ buckets:
 cmek:
   diskKeys: []
 
+# The hub's keys in Cloud KMS (09/fix, I1; S5, S8, S9): a key ring and four keys, made here and never destroyed by this chart. The hub chart's
+# config.kms.* name the same keys (render.sh contract checks it), as key versions for the three signing keys and without a version for the vault
+# key. The key material is made by Cloud KMS: nothing here imports a key or holds a key version, and the first version of each signing key exists
+# as soon as Config Connector has made the key. What the operator reads off it is in README.md.
+kms:
+  # The key ring, in `location` (a region; whether a multi-region such as eu can hold the hub's keys is not verified). A key ring cannot be
+  # deleted once it is made (not verified), so the name is a decision. No default.
+  keyRing: ""
+  # HSM or SOFTWARE: where the key material is kept. It cannot be changed afterwards, so it is written out. Both keep the material in Cloud
+  # KMS and never export it (S5). deploy/policy/kms.rego requires HSM in prod, and a human relaxes that in docs/decisions.md.
+  protectionLevel: HSM
+  # The names of the four keys: Cloud KMS names, and Kubernetes names. No default: they are the last part of the hub chart's config.kms.*.
+  keys:
+    # The CA that signs the agents' (and the sentinels') client certificates. Asymmetric signing, EC_SIGN_P256_SHA256, and used for nothing else.
+    agentCa: ""
+    # The CA that signs the hub replicas' certificates. Another key than agentCa (an agent's certificate must never be a replica's, S5).
+    replicaCa: ""
+    # Signs the hourly checkpoints of the audit chain (S9). Older versions stay enabled, so that the nightly verification can check old ones.
+    auditCheckpoint: ""
+    # Wraps the data key of each stored GitHub token (S8). Symmetric; the hub names the key and not a version.
+    vault: ""
+  # How often the vault key gets a new primary version, in seconds (at least a day). The versions stay enabled and decrypt what they wrapped
+  # (not verified). Empty: never. The signing keys have no rotation period: the hub pins a key version, so rotating one is a person's step.
+  vaultRotationPeriod: 7776000s
+  # How long a destroyed key version waits before it is destroyed for good, so that a mistake can be undone: 30 days. Cloud KMS's default is 24
+  # hours, and the field cannot be changed once the key is made. A CA key version that is destroyed by mistake takes every agent offline.
+  destroyScheduledDuration: 2592000s
+
+# The Secret Manager secrets the hub reads (09/fix, I1; S7): containers only, never values. A person puts each value in, once (README.md), and the
+# hub's account may read each one (roles/secretmanager.secretAccessor on that secret and no other). Teams webhook secrets are named at run time by
+# an administrator and are not made here.
+secrets:
+  # The customer-managed key that encrypts the secrets (S10, Q29), a Cloud KMS key as projects/P/locations/L/keyRings/R/cryptoKeys/K in `location`.
+  # A key of its own: not the vault key and not a signing key, which are used for nothing else. Without one the secrets use Google-managed
+  # encryption and the policy warns (plan 09 A11b); render.sh fails that warning for prod and staging. The Secret Manager service agent is given
+  # use of the key (it needs projectNumber).
+  cmekKey: ""
+  # The names the hub chart's config.secretManager.* default to. A hub values file that changes one changes it here too; render.sh contract
+  # compares the two charts. A Kubernetes name: lower case letters, digits and hyphens. The constants of the hub's code (write-preview-key,
+  # github-read-token, github-webhook-secret and mcp-token-hmac-key) are in the template: they are not settings.
+  hub:
+    webCert: lanekeeper-web-cert
+    webKey: lanekeeper-web-key
+    agentCaCert: lanekeeper-agent-ca-cert
+    replicaCaCert: lanekeeper-replica-ca-cert
+    entraClient: lanekeeper-entra-client
+    loginCookie: lanekeeper-login-cookie
+
 cloudArmor:
   enabled: true
   # The name of the policy; the hub chart's gateway.securityPolicyName is the same string.

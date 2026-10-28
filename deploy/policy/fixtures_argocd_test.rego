@@ -68,6 +68,10 @@ ac_cloud_kinds := [
 	{"group": "binaryauthorization.cnrm.cloud.google.com", "kind": "BinaryAuthorizationPolicy"},
 	{"group": "binaryauthorization.cnrm.cloud.google.com", "kind": "BinaryAuthorizationAttestor"},
 	{"group": "containeranalysis.cnrm.cloud.google.com", "kind": "ContainerAnalysisNote"},
+	# The hub's keys and secret containers (09/fix, I1): the key ring, the keys, and the secrets. No version of either: a version holds a value.
+	{"group": "kms.cnrm.cloud.google.com", "kind": "KMSKeyRing"},
+	{"group": "kms.cnrm.cloud.google.com", "kind": "KMSCryptoKey"},
+	{"group": "secretmanager.cnrm.cloud.google.com", "kind": "SecretManagerSecret"},
 ]
 
 ac_agent_kinds := [

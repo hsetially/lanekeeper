@@ -1,8 +1,9 @@
 # The Argo CD projects of the platform cluster (09/T6; S16, S19, plan 09 D26). An Application in the `default` project can deploy anything, from
 # any repository, to any namespace: these two cannot. `lanekeeper-workloads` deploys the hub and the database to one namespace and may
 # make nothing that grants access to Google Cloud; `lanekeeper-cloud` deploys the Config Connector resources (buckets, IAM, Cloud Armor,
-# Binary Authorization) to a namespace of their own, and nothing else. deploy/policy/argocd.rego holds the list of what each may deploy,
-# and deploy/tests/render.sh renders every chart to show that the project allows everything the chart makes.
+# Binary Authorization, the hub's keys and its secret containers) to a namespace of their own, and nothing else. deploy/policy/argocd.rego
+# holds the list of what each may deploy, and deploy/tests/render.sh renders every chart to show that the project allows everything the
+# chart makes.
 #
 # Applied once to the platform cluster's Argo CD, in its namespace `argocd`, by whoever installs it (deploy/argocd/README.md).
 apiVersion: argoproj.io/v1alpha1
@@ -95,5 +96,14 @@ spec:
       kind: BinaryAuthorizationAttestor
     - group: containeranalysis.cnrm.cloud.google.com
       kind: ContainerAnalysisNote
+    # The hub's keys (a key ring and four keys: the agent CA, the replica CA, the audit checkpoint key and the vault key) and the Secret
+    # Manager secrets it reads, which are containers. No KMSCryptoKeyVersion and no SecretManagerSecretVersion: a version is where a value
+    # is, and a person puts the values in (charts/gcp/README.md).
+    - group: kms.cnrm.cloud.google.com
+      kind: KMSKeyRing
+    - group: kms.cnrm.cloud.google.com
+      kind: KMSCryptoKey
+    - group: secretmanager.cnrm.cloud.google.com
+      kind: SecretManagerSecret
   orphanedResources:
     warn: true

@@ -1,8 +1,9 @@
 # gcp chart
 
 The Google Cloud resources of Lanekeeper as Config Connector manifests (plan 09 A4). **09/T3 starts it with Cloud Armor;** T5 adds
-the buckets, the service accounts and the IAM around them, and **T6 adds Binary Authorization** (admission, below). Secret containers only,
-never values.
+the buckets, the service accounts and the IAM around them, **T6 adds Binary Authorization** (admission, below), and **09/fix (gap I1) adds
+the hub's Cloud KMS keys, the Secret Manager containers it reads and the IAM on each** ("The hub's keys and secrets", below). Secret
+containers only, never values.
 
 `templates/cloudarmor.yaml` renders `ComputeSecurityPolicy/<cloudArmor.policyName>` (the hub chart's `gateway.securityPolicyName`):
 
@@ -38,11 +39,115 @@ the missing step shows (plan 09 blockers, B5).
 the one resource kind it is for, and each bucket for its own caller. A person, a group, `allUsers`, a basic role and a role on the whole
 project (but Cloud Trace) are refused.
 
-**The keys are not made here.** A bucket and a disk take the name of a Cloud KMS key that exists (Q29 has not chosen the key ring), in
-the bucket's `location`. Without a key a bucket falls back to Google-managed encryption, which renders with a warning that
-`render.sh` makes a failure for prod and staging. The signing keys (the agent CA, the replica CA, the audit checkpoint key, the token
-KEK) and the hub's Secret Manager and KMS bindings are **not in this commit**: their names are settings of the hub chart (`config.kms.*`
-and the Secret Manager names of `crates/hub/HARDENING.md`), and nothing here creates what they name.
+**The customer-managed keys of the buckets, the disks and the secrets are not made here.** A bucket, a disk and the secrets
+(`secrets.cmekKey`) take the name of a Cloud KMS key that exists (Q29 has not chosen the key ring), in `location`. Without a key a
+bucket or a secret falls back to Google-managed encryption, which renders with a warning that `render.sh` makes a failure for prod and
+staging. The keys that the hub itself uses, and the secrets it reads, are made here: next section.
+
+## The hub's keys and secrets (09/fix, I1; S5, S7, S8, S9)
+
+`templates/kms.yaml`, `secrets.yaml` and `iam.yaml` render what `crates/hub/HARDENING.md` says the hub's Google service account needs
+(the names are the hub chart's, `render.sh contract` compares them). `deploy/policy/kms.rego` checks the keys and the secrets, and
+`iam.rego` every binding on them.
+
+| Renders | Why |
+|---|---|
+| `KMSKeyRing/<kms.keyRing>` in `location` | the ring of the four keys |
+| `KMSCryptoKey` agent CA, replica CA, audit checkpoint | `ASYMMETRIC_SIGN`, `EC_SIGN_P256_SHA256`, `kms.protectionLevel` (HSM; `kms.rego` requires it in prod). **Two separate CA keys** (an agent's certificate is never a replica's, S5), each used for nothing else. No rotation period: the hub pins a key *version*, so rotating one is a person's step; older versions stay enabled (the checkpoint key's must, to verify old checkpoints) |
+| `KMSCryptoKey` vault | `ENCRYPT_DECRYPT`, `GOOGLE_SYMMETRIC_ENCRYPTION`: wraps the data key of each stored GitHub token (S8). The hub names the key and no version; `kms.vaultRotationPeriod` (90 days) gives it a new primary version now and then |
+| all five | `deletion-policy: abandon` and `Prune=false`: removing them from Git or from Argo CD destroys nothing. `destroyScheduledDuration` is 30 days, so that a destroyed version can be restored in time. The key material is made by Cloud KMS: no `importOnly`, no `skipInitialVersionCreation`, and no key *version* is a resource of this chart |
+| `SecretManagerSecret` x 10 | the containers the hub reads, never a value and never a version: `lanekeeper-web-cert`, `lanekeeper-web-key`, `lanekeeper-agent-ca-cert`, `lanekeeper-replica-ca-cert`, `lanekeeper-entra-client`, `lanekeeper-login-cookie` (the six `secrets.hub.*`, which default to the hub chart's `config.secretManager.*`), and `write-preview-key`, `github-read-token`, `github-webhook-secret`, `mcp-token-hmac-key` (constants of the hub's code, in the template). One replica in `location`, encrypted with `secrets.cmekKey`; `deletion-policy: abandon` and `Prune=false`. The spec is the replication and nothing else: no ttl, no expiry, no rotation, no topic |
+| `IAMPolicyMember` `roles/cloudkms.signerVerifier` x 3 | the hub's account, on each of the three signing keys (on the key, never on the ring or the project) |
+| `IAMPolicyMember` `roles/cloudkms.cryptoKeyEncrypterDecrypter` | the hub's account, on the vault key and on no other key |
+| `IAMPolicyMember` `roles/secretmanager.secretAccessor` x 10 | the hub's account, one binding on each secret, never on the project |
+| `IAMPolicyMember` `cryptoKeyEncrypterDecrypter` | Secret Manager's service agent (`service-<projectNumber>@gcp-sa-secretmanager.iam.gserviceaccount.com`), on `secrets.cmekKey` |
+
+The hub's account gets nothing else on KMS or Secret Manager: not `cloudkms.admin`, not `signer` or `publicKeyViewer`, not a version
+role, and not `secretAccessor` on a secret that is not in this output. `iam.rego` refuses each, and `render.sh planted` shows it.
+
+### Which values feed which hub chart value
+
+| This chart | Hub chart (`deploy/values/hub/<env>.yaml`) | Checked by `render.sh contract` |
+|---|---|---|
+| `project`, `location`, `kms.keyRing`, `kms.keys.agentCa` | `config.kms.agentCa` = `projects/<project>/locations/<location>/keyRings/<keyRing>/cryptoKeys/<agentCa>/cryptoKeyVersions/N` (`LK_AGENT_CA_KMS_REF`) | the key exists, is the agent CA key, and the hub's account may sign with it |
+| `kms.keys.replicaCa` | `config.kms.replicaCa` (`LK_REPLICA_CA_KMS_REF`) | the same, and a different key |
+| `kms.keys.auditCheckpoint` | `config.kms.auditCheckpoint` (`LK_AUDIT_CHECKPOINT_KMS_REF`) | the same |
+| `kms.keys.vault` | `config.kms.vault`, **without a version** (`LK_VAULT_KMS_REF`) | the key exists, is the vault key, and the hub's account may encrypt and decrypt with it |
+| `project` | `config.gcpProject` (`LK_GCP_PROJECT`) | every secret is made in that project |
+| `secrets.hub.webCert`, `webKey`, `agentCaCert`, `replicaCaCert`, `entraClient`, `loginCookie` | `config.secretManager.*` (`LK_WEB_CERT_REF`, `LK_WEB_KEY_REF`, `LK_AGENT_CA_CERT_REF`, `LK_REPLICA_CA_CERT_REF`, `LK_ENTRA_CLIENT_AUTH_REF`, `LK_ENTRA_COOKIE_KEY_REF`) | each name has a container and a `secretAccessor` binding for the hub's account |
+| (the template) `write-preview-key`, `github-read-token`, `github-webhook-secret`, `mcp-token-hmac-key` | none: constants read from `crates/hub-writes/src/config.rs`, `crates/hub-mcp/src/auth/pat.rs` and `crates/hub/src/config/git.rs` | the same, and a container that the hub does not read is a failure too |
+| `buckets.auditCheckpoint.name` | `config.auditCheckpointBucket` (`LK_AUDIT_CHECKPOINT_BUCKET`) | as before (T5) |
+
+A hub values file that renames a secret or a key without this chart's values following, or the other way round, fails `render.sh
+contract` (it is a hub that cannot start, or a container nothing reads). The names of a secret are lower case letters, digits and
+hyphens (a Kubernetes name); the hub chart allows more, and a name with a capital or an underscore is a change to this chart first.
+**One project for each environment:** the names of the secrets are constants of the hub's code (`write-preview-key` cannot carry an
+environment), so staging and prod are two projects. The keys are named for the environment (`lanekeeper-vault-prod`) all the same.
+
+### What a person still does, in this order
+
+None of it is automated or rendered, on purpose: values and key versions are what Git must never hold.
+
+1. **Enable** `cloudkms.googleapis.com` and `secretmanager.googleapis.com` in the project, and make the customer-managed key of the
+   secrets (`secrets.cmekKey`, a key of its own in `location`). Secret Manager's service agent must exist before the secrets can be
+   written with that key: `gcloud beta services identity create --service=secretmanager.googleapis.com --project=<project>` is the
+   authors' recollection of the command (**not verified**: the `beta` component could not be installed where this was written).
+2. **Apply the chart** (Argo CD, project `lanekeeper-cloud`). Config Connector makes the ring, the four keys and the ten containers, and
+   binds the roles.
+3. **Read the key versions off the created keys.** The hub chart's `config.kms.agentCa`, `replicaCa` and `auditCheckpoint` name a key
+   *version*, and a version's number is known only once the key exists:
+   ```
+   gcloud kms keys versions list --key=<kms.keys.agentCa> --keyring=<kms.keyRing> --location=<location> --project=<project> --format='value(name)'
+   ```
+   prints `projects/.../cryptoKeyVersions/N` for each version. That string is `LK_AGENT_CA_KMS_REF` (`config.kms.agentCa`), and the same for
+   `kms.keys.replicaCa` (`LK_REPLICA_CA_KMS_REF`) and `kms.keys.auditCheckpoint` (`LK_AUDIT_CHECKPOINT_KMS_REF`). The vault key needs no
+   version: `LK_VAULT_KMS_REF` is `projects/<project>/locations/<location>/keyRings/<kms.keyRing>/cryptoKeys/<kms.keys.vault>`, which the
+   values already say. **The first version of each CA key must exist before `hub ca-init` and before the first rollout of the hub.** This
+   chart sets no `skipInitialVersionCreation`, so that Cloud KMS makes it when it makes the key; that the version exists, and is number 1,
+   is **not verified** (Google's documentation could not be read, plan 09 blockers B6): run the command above and use what it prints.
+4. **Make the two CA certificates with `hub ca-init`** (`crates/hub/HARDENING.md`, "Making a CA certificate"): once for each CA key
+   version, from the hub image, and store the output in `lanekeeper-agent-ca-cert` and `lanekeeper-replica-ca-cert`. The person who runs
+   it needs `roles/cloudkms.publicKeyViewer` and `roles/cloudkms.signerVerifier` on **that one key** (not the ring, not the project; the
+   hub documents the pair, as roles on a key *version*, and Cloud KMS grants IAM on the key that holds it, **not verified**). That grant
+   is a person's, so this chart does not render it (`iam.rego` refuses a person as a member): add it for the run and remove it after,
+   with `gcloud kms keys add-iam-policy-binding <key> --keyring=<ring> --location=<location> --member=user:<you> --role=<role>` and
+   `remove-iam-policy-binding`.
+5. **Put the values into the other eight secrets**, once each, with `printf %s "<value>" | gcloud secrets versions add <name> --data-file=-
+   --project=<project>` (nothing but the value goes through the pipe, and shell history must not keep it):
+
+   | Secret | The value |
+   |---|---|
+   | `lanekeeper-web-cert`, `lanekeeper-web-key` | the PEM chain and the PEM private key of the web listener's certificate (the hop from the load balancer to the pod) |
+   | `lanekeeper-entra-client` | the Entra app registration's client secret |
+   | `lanekeeper-login-cookie` | 32 random bytes as base64url |
+   | `write-preview-key` | at least 32 bytes; the hub does not start without it |
+   | `github-read-token` | the read-only GitHub credential (fine-grained) |
+   | `github-webhook-secret` | the secret that GitHub also holds for the webhook |
+   | `mcp-token-hmac-key` | at least 32 random bytes as base64url; read only with `LK_MCP_AUTH=personal_token`, and the hub does not start in that mode without it |
+6. **Teams webhook secrets** are named at run time by an administrator (`notification_settings.destination_ref`), so this chart cannot bind
+   them ahead of time and renders none. Each one the administrator names needs a container, a value and a binding for the hub's account,
+   made by hand: `gcloud secrets add-iam-policy-binding <name> --member=serviceAccount:lanekeeper-hub@<project>.iam.gserviceaccount.com
+   --role=roles/secretmanager.secretAccessor --project=<project>`. The install guide makes this a runbook step.
+
+### Not verified
+
+Google's documentation (`docs.cloud.google.com`) could not be read where this was written (plan 09 blockers, B6), so the following rest
+on the Config Connector CRDs (v1.159.0), `crates/hub/HARDENING.md` and the authors' memory, and the first apply is the test:
+
+- that Cloud KMS makes a first version when Config Connector makes the key, that it is number 1, and that **HSM keys with
+  `EC_SIGN_P256_SHA256`** and `GOOGLE_SYMMETRIC_ENCRYPTION` are offered in `location` (if HSM is not, `kms.protectionLevel: SOFTWARE` is
+  allowed in staging and refused in prod by `kms.rego`; relaxing prod is a decision for `docs/decisions.md`);
+- that IAM on a key covers all its versions (so `signerVerifier` on the checkpoint key covers older versions), that a key ring and a key
+  cannot be deleted once made, and what Config Connector does when it finds the ring or a key already there;
+- that a version the vault key rotates away from still decrypts what it wrapped, and the allowed range of `destroyScheduledDuration`;
+- that a secret with a single `userManaged` replica can be encrypted with a regional key in that region, and that a multi-region such as
+  `eu` is not usable as `location` for the keys and the secrets;
+- the name of Secret Manager's service agent and that the secrets' accessor needs no role on `secrets.cmekKey`;
+- that `roles/cloudkms.signerVerifier` is enough for the hub to sign and to read the public key, as `HARDENING.md` says.
+
+`LK_AUDIT_CHECKPOINT_VERIFY_KMS_REFS` (older checkpoint key versions that the nightly verification still accepts) is not a setting of the
+hub chart (its `values.yaml` says why), so rotating the checkpoint key needs that setting first; this chart keeps the old versions
+enabled and its role covers them.
 
 ## Admission: only images signed by CI run (09/T6; S19, S20, plan 09 A5)
 

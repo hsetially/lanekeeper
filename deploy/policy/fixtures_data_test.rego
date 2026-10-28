@@ -246,6 +246,78 @@ gs_member(name, role, ref, who) := {
 
 gs_bucket_ref(name) := {"apiVersion": "storage.cnrm.cloud.google.com/v1beta1", "kind": "StorageBucket", "name": name}
 
+# The hub's keys and the Secret Manager secrets it reads (09/fix, I1): a key ring, four keys, ten containers. The names are the ones of
+# deploy/values/gcp/prod.yaml; the hub chart's values name the same ones (deploy/tests/render.sh contract checks it).
+gs_ring_name := "lanekeeper"
+
+gs_keep_annotations := {
+	"cnrm.cloud.google.com/project-id": gs_project,
+	"cnrm.cloud.google.com/deletion-policy": "abandon",
+	"argocd.argoproj.io/sync-options": "Prune=false",
+}
+
+gs_keyring := {
+	"apiVersion": "kms.cnrm.cloud.google.com/v1beta1",
+	"kind": "KMSKeyRing",
+	"metadata": {"name": gs_ring_name, "namespace": gs_namespace, "labels": gs_labels("key-ring"), "annotations": gs_keep_annotations},
+	"spec": {"location": "example-location"},
+}
+
+gs_signing_key(name, purpose) := {
+	"apiVersion": "kms.cnrm.cloud.google.com/v1beta1",
+	"kind": "KMSCryptoKey",
+	"metadata": {"name": name, "namespace": gs_namespace, "labels": gs_labels(purpose), "annotations": gs_keep_annotations},
+	"spec": {
+		"keyRingRef": {"name": gs_ring_name},
+		"purpose": "ASYMMETRIC_SIGN",
+		"versionTemplate": {"algorithm": "EC_SIGN_P256_SHA256", "protectionLevel": "HSM"},
+		"destroyScheduledDuration": "2592000s",
+	},
+}
+
+gs_vault_key := {
+	"apiVersion": "kms.cnrm.cloud.google.com/v1beta1",
+	"kind": "KMSCryptoKey",
+	"metadata": {"name": "lanekeeper-vault-prod", "namespace": gs_namespace, "labels": gs_labels("vault"), "annotations": gs_keep_annotations},
+	"spec": {
+		"keyRingRef": {"name": gs_ring_name},
+		"purpose": "ENCRYPT_DECRYPT",
+		"versionTemplate": {"algorithm": "GOOGLE_SYMMETRIC_ENCRYPTION", "protectionLevel": "HSM"},
+		"rotationPeriod": "7776000s",
+		"destroyScheduledDuration": "2592000s",
+	},
+}
+
+gs_keys := [
+	gs_signing_key("lanekeeper-agent-ca-prod", "agent-ca"),
+	gs_signing_key("lanekeeper-replica-ca-prod", "replica-ca"),
+	gs_signing_key("lanekeeper-audit-checkpoint-prod", "audit-checkpoint-signing"),
+	gs_vault_key,
+]
+
+gs_kms_ref(name) := {"apiVersion": "kms.cnrm.cloud.google.com/v1beta1", "kind": "KMSCryptoKey", "name": name}
+
+gs_secret_names := [
+	"lanekeeper-web-cert", "lanekeeper-web-key", "lanekeeper-agent-ca-cert", "lanekeeper-replica-ca-cert", "lanekeeper-entra-client",
+	"lanekeeper-login-cookie", "write-preview-key", "github-read-token", "github-webhook-secret", "mcp-token-hmac-key",
+]
+
+gs_secrets_key := gs_key("lanekeeper-secrets")
+
+gs_secret(name) := {
+	"apiVersion": "secretmanager.cnrm.cloud.google.com/v1beta1",
+	"kind": "SecretManagerSecret",
+	"metadata": {"name": name, "namespace": gs_namespace, "labels": gs_labels("secret"), "annotations": gs_keep_annotations},
+	"spec": {"replication": {"userManaged": {"replicas": [{
+		"location": "example-location",
+		"customerManagedEncryption": {"kmsKeyRef": {"external": gs_secrets_key}},
+	}]}}},
+}
+
+gs_secrets := [gs_secret(n) | some n in gs_secret_names]
+
+gs_secret_ref(name) := {"apiVersion": "secretmanager.cnrm.cloud.google.com/v1beta1", "kind": "SecretManagerSecret", "name": name}
+
 gs_members := [
 	gs_member("lanekeeper-hub-workload-identity", "roles/iam.workloadIdentityUser", {"apiVersion": "iam.cnrm.cloud.google.com/v1beta1", "kind": "IAMServiceAccount", "name": "lanekeeper-hub"}, "serviceAccount:example-project.svc.id.goog[lanekeeper/lanekeeper-hub]"),
 	gs_member("lanekeeper-db-workload-identity", "roles/iam.workloadIdentityUser", {"apiVersion": "iam.cnrm.cloud.google.com/v1beta1", "kind": "IAMServiceAccount", "name": "lanekeeper-db"}, "serviceAccount:example-project.svc.id.goog[lanekeeper/lanekeeper-db]"),
@@ -258,16 +330,29 @@ gs_members := [
 	gs_member("lanekeeper-gcs-agent-key2", "roles/cloudkms.cryptoKeyEncrypterDecrypter", {"kind": "KMSCryptoKey", "external": gs_key("lanekeeper-audit-checkpoint")}, gs_storage_agent),
 	gs_member("lanekeeper-gcs-agent-key3", "roles/cloudkms.cryptoKeyEncrypterDecrypter", {"kind": "KMSCryptoKey", "external": gs_key("lanekeeper-docs")}, gs_storage_agent),
 	gs_member("lanekeeper-compute-agent-key1", "roles/cloudkms.cryptoKeyEncrypterDecrypter", {"kind": "KMSCryptoKey", "external": db_disk_key}, gs_compute_agent),
+	gs_member("lanekeeper-secretmanager-agent-key1", "roles/cloudkms.cryptoKeyEncrypterDecrypter", {"kind": "KMSCryptoKey", "external": gs_secrets_key}, gs_secretmanager_agent),
+	gs_member("lanekeeper-hub-sign-agent-ca", "roles/cloudkms.signerVerifier", gs_kms_ref("lanekeeper-agent-ca-prod"), gs_gsa("lanekeeper-hub")),
+	gs_member("lanekeeper-hub-sign-replica-ca", "roles/cloudkms.signerVerifier", gs_kms_ref("lanekeeper-replica-ca-prod"), gs_gsa("lanekeeper-hub")),
+	gs_member("lanekeeper-hub-sign-audit-checkpoint", "roles/cloudkms.signerVerifier", gs_kms_ref("lanekeeper-audit-checkpoint-prod"), gs_gsa("lanekeeper-hub")),
+	gs_member("lanekeeper-hub-vault", "roles/cloudkms.cryptoKeyEncrypterDecrypter", gs_kms_ref("lanekeeper-vault-prod"), gs_gsa("lanekeeper-hub")),
 ]
+
+# One binding for each secret the hub reads, on that secret and on nothing wider.
+gs_secret_members := [gs_member(concat("-", ["lanekeeper-hub-read", n]), "roles/secretmanager.secretAccessor", gs_secret_ref(n), gs_gsa("lanekeeper-hub")) | some n in gs_secret_names]
 
 # The Google-managed service agents that use a customer-managed key on the project's behalf (the project number is an example).
 gs_storage_agent := "serviceAccount:service-123456789012@gs-project-accounts.iam.gserviceaccount.com"
 
 gs_compute_agent := "serviceAccount:service-123456789012@compute-system.iam.gserviceaccount.com"
 
+gs_secretmanager_agent := "serviceAccount:service-123456789012@gcp-sa-secretmanager.iam.gserviceaccount.com"
+
 gs_docs := array.concat(
-	[gs_backup_bucket, gs_audit_bucket, gs_docs_bucket, gs_serviceaccount("lanekeeper-hub"), gs_serviceaccount("lanekeeper-db")],
-	gs_members,
+	array.concat(
+		[gs_backup_bucket, gs_audit_bucket, gs_docs_bucket, gs_serviceaccount("lanekeeper-hub"), gs_serviceaccount("lanekeeper-db"), gs_keyring],
+		array.concat(gs_keys, gs_secrets),
+	),
+	array.concat(gs_members, gs_secret_members),
 )
 
 # The input of a conftest run over the gcp chart's output without Cloud Armor.
@@ -294,3 +379,15 @@ gs_bucket_add(name, path, value) := gs_patch("StorageBucket", name, [{"op": "add
 gs_bucket_remove(name, path) := gs_patch("StorageBucket", name, [{"op": "remove", "path": path}])
 
 gs_member_set(name, path, value) := gs_patch("IAMPolicyMember", name, [{"op": "replace", "path": path, "value": value}])
+
+gs_key_set(name, path, value) := gs_patch("KMSCryptoKey", name, [{"op": "replace", "path": path, "value": value}])
+
+gs_key_add(name, path, value) := gs_patch("KMSCryptoKey", name, [{"op": "add", "path": path, "value": value}])
+
+gs_key_remove(name, path) := gs_patch("KMSCryptoKey", name, [{"op": "remove", "path": path}])
+
+gs_secret_set(name, path, value) := gs_patch("SecretManagerSecret", name, [{"op": "replace", "path": path, "value": value}])
+
+gs_secret_add(name, path, value) := gs_patch("SecretManagerSecret", name, [{"op": "add", "path": path, "value": value}])
+
+gs_secret_remove(name, path) := gs_patch("SecretManagerSecret", name, [{"op": "remove", "path": path}])

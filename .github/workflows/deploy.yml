@@ -26,6 +26,9 @@ on:
       - "crates/hub/src/config.rs"
       - "crates/hub/src/config/**"
       - "crates/hub/tests/hardening.rs"
+      # The gcp chart's Secret Manager secrets are checked against the names that are constants of the hub's code (render.sh contract).
+      - "crates/hub-writes/src/config.rs"
+      - "crates/hub-mcp/src/auth/pat.rs"
       # The agent chart is checked against these (contract.rego, env-names.sh): a change to one must run the check.
       - "crates/agent/RBAC.md"
       - "crates/agent/HARDENING.md"

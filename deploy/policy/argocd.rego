@@ -330,6 +330,10 @@ approved_namespaced := {
 		"binaryauthorization.cnrm.cloud.google.com/BinaryAuthorizationPolicy",
 		"binaryauthorization.cnrm.cloud.google.com/BinaryAuthorizationAttestor",
 		"containeranalysis.cnrm.cloud.google.com/ContainerAnalysisNote",
+		# The hub's keys and the secret containers it reads (09/fix, I1): the key ring, the keys, the secrets. No KMSCryptoKeyVersion,
+		# KMSImportJob or SecretManagerSecretVersion: a version is where a value is, and the values are put in by a person.
+		"kms.cnrm.cloud.google.com/KMSKeyRing", "kms.cnrm.cloud.google.com/KMSCryptoKey",
+		"secretmanager.cnrm.cloud.google.com/SecretManagerSecret",
 	},
 	"lanekeeper-agent": {
 		"/ServiceAccount", "/Secret", "/ConfigMap", "apps/Deployment", "rbac.authorization.k8s.io/Role",

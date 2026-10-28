@@ -152,6 +152,28 @@ spec:
   attestation: {hint: {humanReadableName: x}}
   bogusField: 1
 ---
+apiVersion: kms.cnrm.cloud.google.com/v1beta1
+kind: KMSKeyRing
+metadata: {name: planted, namespace: planted-ns}
+spec:
+  location: l
+  bogusField: 1
+---
+apiVersion: kms.cnrm.cloud.google.com/v1beta1
+kind: KMSCryptoKey
+metadata: {name: planted, namespace: planted-ns}
+spec:
+  keyRingRef: {name: r}
+  purpose: ASYMMETRIC_SIGN
+  bogusField: 1
+---
+apiVersion: secretmanager.cnrm.cloud.google.com/v1beta1
+kind: SecretManagerSecret
+metadata: {name: planted, namespace: planted-ns}
+spec:
+  replication: {userManaged: {replicas: [{location: l}]}}
+  bogusField: 1
+---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata: {name: planted, namespace: planted-ns}

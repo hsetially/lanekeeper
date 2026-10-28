@@ -21,5 +21,5 @@ NOTE: gateway.enabled is false. Nothing serves users, and GitHub's webhooks have
 {{- if eq (index .Values.config.tuning "LK_MCP_AUTH" | default "oauth") "personal_token" }}
 
 NOTE: LK_MCP_AUTH is personal_token. The hub does not start in that mode without the Secret Manager secret mcp-token-hmac-key (at least 32
-random bytes as base64url), and its Google service account needs roles/secretmanager.secretAccessor on it. The chart creates neither.
+random bytes as base64url), and its Google service account needs roles/secretmanager.secretAccessor on it. This chart creates neither (charts/gcp makes the container and the binding).
 {{- end }}

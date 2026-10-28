@@ -30,21 +30,24 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | quote }}
 {{- end }}
 
 {{/*
-A customer-managed key (S10, Q29). Takes (list "values.path" $key $location). Prints the key when it is a full Cloud KMS key name in
-the location of the bucket, and nothing when there is no key (the fallback: Google-managed encryption, with a warning from the
-policy). It stops the render for a name that is not a key or is in another location, which Cloud Storage would refuse at apply time.
+A customer-managed key (S10, Q29). Takes (list "values.path" $key $location) and, for a resource that is not a bucket, a fourth item that
+names it ("secret"). Prints the key when it is a full Cloud KMS key name in the location of the bucket, and nothing when there is no key
+(the fallback: Google-managed encryption, with a warning from the policy). It stops the render for a name that is not a key or is in
+another location, which Cloud Storage and Secret Manager would refuse at apply time.
 */}}
 {{- define "lanekeeper-gcp.key" -}}
 {{- $name := index . 0 -}}
 {{- $key := index . 1 -}}
 {{- $location := index . 2 -}}
+{{- $what := "bucket" -}}
+{{- if gt (len .) 3 -}}{{- $what = index . 3 -}}{{- end -}}
 {{- if $key -}}
 {{- if not (regexMatch "^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+$" $key) -}}
 {{- fail (printf "%s %q is not a Cloud KMS key (projects/P/locations/L/keyRings/R/cryptoKeys/K) (S10)" $name $key) -}}
 {{- end -}}
 {{- $keyLocation := index (regexSplit "/" $key -1) 3 -}}
 {{- if ne (lower $keyLocation) (lower $location) -}}
-{{- fail (printf "%s %q is in %s, and the bucket is in %s: a key must be in the location of the bucket" $name $key $keyLocation $location) -}}
+{{- fail (printf "%s %q is in %s, and the %s is in %s: a key must be in the location of the %s" $name $key $keyLocation $what $location $what) -}}
 {{- end -}}
 {{- $key -}}
 {{- end -}}
@@ -144,4 +147,57 @@ annotations:
   cnrm.cloud.google.com/project-id: {{ .project | quote }}
   cnrm.cloud.google.com/deletion-policy: abandon
   argocd.argoproj.io/sync-options: Prune=false
+{{- end }}
+
+{{/*
+The metadata of a key ring, a key or a secret container (09/fix, I1): the things the hub cannot run without, and that hold what a person
+put in them. Takes a dict with root, name, purpose, project, env and, for a secret without a customer-managed key, fallback (true).
+None of them is deleted from Google Cloud when its Kubernetes resource is removed, and Argo CD does not prune them (S5, S7, S8, S9).
+*/}}
+{{- define "lanekeeper-gcp.keptMeta" -}}
+name: {{ .name }}
+namespace: {{ .root.Release.Namespace }}
+labels:
+  {{- include "lanekeeper-gcp.labels" .root | nindent 2 }}
+  lanekeeper.io/purpose: {{ .purpose }}
+  lanekeeper.io/environment: {{ .env }}
+annotations:
+  cnrm.cloud.google.com/project-id: {{ .project | quote }}
+  cnrm.cloud.google.com/deletion-policy: abandon
+  argocd.argoproj.io/sync-options: Prune=false
+  {{- if .fallback }}
+  # No customer-managed key (Q29): Google-managed encryption. The policy warns; render.sh fails the warning for prod and staging.
+  lanekeeper.io/cmek: fallback
+  {{- end }}
+{{- end }}
+
+{{/*
+The names of the hub's four keys, as JSON ({"agentCa": ..., "replicaCa": ..., "auditCheckpoint": ..., "vault": ...}): all required, and four
+different keys. The two CAs are two keys (an agent's certificate must never be a replica's, S5), and no key is used for two things.
+*/}}
+{{- define "lanekeeper-gcp.keyNames" -}}
+{{- $keys := .Values.kms.keys -}}
+{{- $names := dict -}}
+{{- range $field := list "agentCa" "replicaCa" "auditCheckpoint" "vault" -}}
+{{- $_ := set $names $field (required (printf "kms.keys.%s is required: the name of the key (the last part of the hub chart's config.kms.%s)" $field $field) (index $keys $field)) -}}
+{{- end -}}
+{{- if ne (len (values $names | uniq)) 4 -}}
+{{- fail (printf "kms.keys has %v: the agent CA, the replica CA, the audit checkpoint key and the vault key are four different keys, and each is used for one thing (S5, S8, S9)" (values $names | sortAlpha)) -}}
+{{- end -}}
+{{- toJson $names -}}
+{{- end }}
+
+{{/*
+The names of the Secret Manager secrets the hub reads, as a JSON list: the six that the hub chart's config.secretManager.* name, and the
+four that are constants of the hub's code. Each once: the two CA certificates must be two secrets (the hub exits 2 otherwise), and a name
+twice would be one container with two meanings.
+*/}}
+{{- define "lanekeeper-gcp.secretNames" -}}
+{{- $s := .Values.secrets.hub -}}
+{{- /* crates/hub-writes/src/config.rs PREVIEW_KEY_SECRET, crates/hub/src/config/git.rs (the defaults of LK_GIT_READ_REF and LK_GIT_WEBHOOK_REF), crates/hub-mcp/src/auth/pat.rs KEY_SECRET_NAME */ -}}
+{{- $names := list $s.webCert $s.webKey $s.agentCaCert $s.replicaCaCert $s.entraClient $s.loginCookie "write-preview-key" "github-read-token" "github-webhook-secret" "mcp-token-hmac-key" -}}
+{{- if ne (len $names) (len (uniq $names)) -}}
+{{- fail (printf "secrets.hub has a name twice, or one of the hub's constants (%v): each secret is one container with one meaning" (sortAlpha $names)) -}}
+{{- end -}}
+{{- toJson $names -}}
 {{- end }}

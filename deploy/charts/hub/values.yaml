@@ -50,7 +50,8 @@ config:
   # else starts pending (S1). Remove them once real administrators exist.
   bootstrapAdmins: []
   # The NAMES of the Secret Manager secrets the hub reads at start. The hub's Google account needs roles/secretmanager.secretAccessor on
-  # each, and the secrets need a first version: the chart creates neither. The two CA certificates must be two secrets.
+  # each, and the secrets need a first version: this chart creates neither (charts/gcp makes the containers and the bindings, and
+  # render.sh contract compares the names; a person puts the first version in). The two CA certificates must be two secrets.
   secretManager:
     webCert: lanekeeper-web-cert
     webKey: lanekeeper-web-key

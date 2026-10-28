@@ -1,0 +1,63 @@
+{{- /*
+The hub's keys in Cloud KMS (09/fix, I1; S5, S8, S9). A key ring and four keys, each used for one thing, and the roles that let the hub use
+them are in iam.yaml (on each key, never on the ring or the project). deploy/policy/kms.rego checks the rendering.
+
+  agent CA        signs the client certificates of the agents and the sentinels (S5)             asymmetric signing, EC_SIGN_P256_SHA256
+  replica CA      signs the certificates of the hub replicas, so an agent's is never a replica's  asymmetric signing, EC_SIGN_P256_SHA256
+  audit checkpoint signs the hourly checkpoints of the audit chain (S9)                           asymmetric signing, EC_SIGN_P256_SHA256
+  vault           wraps the data key of each stored GitHub token (S8)                             symmetric, ENCRYPT_DECRYPT
+
+The key material is made by Cloud KMS and never imported. Nothing here makes or names a key VERSION: the first version of a key exists once
+Config Connector has made the key (not verified), and the operator reads its name off the key (README.md) for the hub chart's config.kms.*.
+None of the five resources is deleted from Google Cloud when it is removed from Git, and Argo CD does not prune them.
+*/ -}}
+{{- $project := required "project is required: the Google Cloud project of the Config Connector resources" .Values.project }}
+{{- $location := required "location is required: the region of the key ring and of the keys" .Values.location }}
+{{- $env := include "lanekeeper-gcp.environment" . }}
+{{- $kms := .Values.kms }}
+{{- $ring := required "kms.keyRing is required: the key ring of the hub's keys. A key ring cannot be deleted once it is made, so its name is a decision" $kms.keyRing }}
+{{- $level := required "kms.protectionLevel is required: HSM or SOFTWARE, and it cannot be changed afterwards" $kms.protectionLevel }}
+{{- $names := include "lanekeeper-gcp.keyNames" . | fromJson }}
+---
+apiVersion: kms.cnrm.cloud.google.com/v1beta1
+kind: KMSKeyRing
+metadata:
+  {{- include "lanekeeper-gcp.keptMeta" (dict "root" . "name" $ring "purpose" "key-ring" "project" $project "env" $env) | nindent 2 }}
+spec:
+  location: {{ $location }}
+{{- range $key := list (dict "field" "agentCa" "purpose" "agent-ca") (dict "field" "replicaCa" "purpose" "replica-ca") (dict "field" "auditCheckpoint" "purpose" "audit-checkpoint-signing") }}
+---
+# The signing key for the {{ $key.purpose }}. Asymmetric, so that the hub has KMS sign and never holds the key; P-256, the one algorithm the hub's code
+# uses. No rotation period: the hub pins a key version (LK_*_KMS_REF), so a new primary version changes nothing it uses, and rotating is a
+# person's step. Older versions stay enabled; the role that signs is on the key, so it covers every version.
+apiVersion: kms.cnrm.cloud.google.com/v1beta1
+kind: KMSCryptoKey
+metadata:
+  {{- include "lanekeeper-gcp.keptMeta" (dict "root" $ "name" (index $names $key.field) "purpose" $key.purpose "project" $project "env" $env) | nindent 2 }}
+spec:
+  keyRingRef:
+    name: {{ $ring }}
+  purpose: ASYMMETRIC_SIGN
+  versionTemplate:
+    algorithm: EC_SIGN_P256_SHA256
+    protectionLevel: {{ $level }}
+  destroyScheduledDuration: {{ $kms.destroyScheduledDuration | quote }}
+{{- end }}
+---
+# The vault key. Symmetric: the hub asks KMS to wrap and unwrap the data key of each GitHub token, with the user and credential ids as associated
+# data, and never holds this key. The hub names the key and not a version, so a rotation changes nothing it is told.
+apiVersion: kms.cnrm.cloud.google.com/v1beta1
+kind: KMSCryptoKey
+metadata:
+  {{- include "lanekeeper-gcp.keptMeta" (dict "root" . "name" $names.vault "purpose" "vault" "project" $project "env" $env) | nindent 2 }}
+spec:
+  keyRingRef:
+    name: {{ $ring }}
+  purpose: ENCRYPT_DECRYPT
+  versionTemplate:
+    algorithm: GOOGLE_SYMMETRIC_ENCRYPTION
+    protectionLevel: {{ $level }}
+  {{- if $kms.vaultRotationPeriod }}
+  rotationPeriod: {{ $kms.vaultRotationPeriod | quote }}
+  {{- end }}
+  destroyScheduledDuration: {{ $kms.destroyScheduledDuration | quote }}

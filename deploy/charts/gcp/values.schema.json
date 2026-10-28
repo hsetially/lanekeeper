@@ -206,6 +206,93 @@
           }
         }
       }
+    },
+    "kms": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "keyRing": {
+          "type": "string",
+          "pattern": "^$|^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$"
+        },
+        "protectionLevel": {
+          "type": "string",
+          "enum": [
+            "HSM",
+            "SOFTWARE"
+          ]
+        },
+        "keys": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "agentCa": {
+              "type": "string",
+              "pattern": "^$|^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$"
+            },
+            "replicaCa": {
+              "type": "string",
+              "pattern": "^$|^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$"
+            },
+            "auditCheckpoint": {
+              "type": "string",
+              "pattern": "^$|^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$"
+            },
+            "vault": {
+              "type": "string",
+              "pattern": "^$|^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$"
+            }
+          }
+        },
+        "vaultRotationPeriod": {
+          "type": "string",
+          "pattern": "^$|^[0-9]+s$"
+        },
+        "destroyScheduledDuration": {
+          "type": "string",
+          "pattern": "^[0-9]+s$"
+        }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cmekKey": {
+          "type": "string",
+          "pattern": "^$|^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+$"
+        },
+        "hub": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "webCert": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
+            },
+            "webKey": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
+            },
+            "agentCaCert": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
+            },
+            "replicaCaCert": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
+            },
+            "entraClient": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
+            },
+            "loginCookie": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
+            }
+          }
+        }
+      }
     }
   }
 }

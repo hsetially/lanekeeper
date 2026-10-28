@@ -596,6 +596,48 @@ test_deny_the_cloud_project_with_jobs if {
 	refused(fixtures.ac_cloud_patch([{"op": "add", "path": "/spec/namespaceResourceWhitelist/-", "value": {"group": "batch", "kind": "Job"}}]), "extra [\"batch/Job\"]")
 }
 
+# The hub's keys and the Secret Manager secrets (09/fix, I1): the key ring, the keys and the secret containers, and nothing wider in their
+# groups (no key version, no secret version: a version is where a value is).
+test_deny_the_cloud_project_without_key_rings if {
+	refused(fixtures.ac_cloud_patch([{"op": "remove", "path": "/spec/namespaceResourceWhitelist/7"}]), "missing [\"kms.cnrm.cloud.google.com/KMSKeyRing\"]")
+}
+
+test_deny_the_cloud_project_without_keys if {
+	refused(fixtures.ac_cloud_patch([{"op": "remove", "path": "/spec/namespaceResourceWhitelist/8"}]), "missing [\"kms.cnrm.cloud.google.com/KMSCryptoKey\"]")
+}
+
+test_deny_the_cloud_project_without_secrets if {
+	refused(fixtures.ac_cloud_patch([{"op": "remove", "path": "/spec/namespaceResourceWhitelist/9"}]), "missing [\"secretmanager.cnrm.cloud.google.com/SecretManagerSecret\"]")
+}
+
+test_deny_the_cloud_project_with_secret_versions if {
+	refused(fixtures.ac_cloud_patch([{"op": "add", "path": "/spec/namespaceResourceWhitelist/-", "value": {"group": "secretmanager.cnrm.cloud.google.com", "kind": "SecretManagerSecretVersion"}}]), "extra [\"secretmanager.cnrm.cloud.google.com/SecretManagerSecretVersion\"]")
+}
+
+test_deny_the_cloud_project_with_key_versions if {
+	refused(fixtures.ac_cloud_patch([{"op": "add", "path": "/spec/namespaceResourceWhitelist/-", "value": {"group": "kms.cnrm.cloud.google.com", "kind": "KMSCryptoKeyVersion"}}]), "extra [\"kms.cnrm.cloud.google.com/KMSCryptoKeyVersion\"]")
+}
+
+test_deny_the_cloud_project_with_import_jobs if {
+	refused(fixtures.ac_cloud_patch([{"op": "add", "path": "/spec/namespaceResourceWhitelist/-", "value": {"group": "kms.cnrm.cloud.google.com", "kind": "KMSImportJob"}}]), "extra [\"kms.cnrm.cloud.google.com/KMSImportJob\"]")
+}
+
+test_deny_every_kind_of_the_kms_group if {
+	refused(fixtures.ac_cloud_patch([{"op": "add", "path": "/spec/namespaceResourceWhitelist/-", "value": {"group": "kms.cnrm.cloud.google.com", "kind": "*"}}]), "namespaceResourceWhitelist")
+}
+
+test_deny_every_kind_of_the_secret_manager_group if {
+	refused(fixtures.ac_cloud_patch([{"op": "add", "path": "/spec/namespaceResourceWhitelist/-", "value": {"group": "secretmanager.cnrm.cloud.google.com", "kind": "*"}}]), "namespaceResourceWhitelist")
+}
+
+test_deny_keys_in_the_workloads_project if {
+	refused(fixtures.ac_workloads_patch([{"op": "add", "path": "/spec/namespaceResourceWhitelist/-", "value": {"group": "kms.cnrm.cloud.google.com", "kind": "KMSCryptoKey"}}]), "namespaceResourceWhitelist")
+}
+
+test_deny_secrets_of_the_secret_manager_in_the_workloads_project if {
+	refused(fixtures.ac_workloads_patch([{"op": "add", "path": "/spec/namespaceResourceWhitelist/-", "value": {"group": "secretmanager.cnrm.cloud.google.com", "kind": "SecretManagerSecret"}}]), "namespaceResourceWhitelist")
+}
+
 test_deny_project_roles if {
 	refused(fixtures.ac_workloads_patch([{"op": "add", "path": "/spec/roles", "value": [{"name": "ci", "policies": ["p, proj:x:ci, applications, sync, x/*, allow"]}]}]), "roles")
 }

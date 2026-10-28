@@ -1,6 +1,6 @@
 apiVersion: v2
 name: lanekeeper-gcp
-description: The Google Cloud resources of Lanekeeper, declared for Config Connector (09/T3 starts it with Cloud Armor; T5 adds the buckets, the service accounts and the IAM around them, with the grants for customer-managed keys that the buckets and disks use; T6 adds Binary Authorization). Secret containers only, never values (plan 09 A4).
+description: The Google Cloud resources of Lanekeeper, declared for Config Connector (09/T3 starts it with Cloud Armor; T5 adds the buckets, the service accounts and the IAM around them, with the grants for customer-managed keys that the buckets and disks use; T6 adds Binary Authorization; 09/fix I1 adds the hub's Cloud KMS keys, the Secret Manager containers it reads and the IAM on each). Secret containers only, never values (plan 09 A4).
 type: application
 version: 0.1.0
 appVersion: "0.1.0"

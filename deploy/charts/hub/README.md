@@ -54,11 +54,13 @@ would need the FQDN egress policy to name it too, gap N1), `LK_ENTRA_REDIRECT_PA
 `terminationGracePeriodSeconds` is 45, the contract's number. The chart refuses a `LK_SHUTDOWN_GRACE_SECS` and `LK_SHUTDOWN_DRAIN_SECS` whose sum
 plus 10 s is more than that (the hub's defaults, 5 and 25, are used for the one that is not set).
 
-**Made outside the chart** (the chart creates none of it; `crates/hub/README.md` items 2 to 4 are the checklist): the Secret Manager
-secrets of the table and their first versions, `write-preview-key` (the hub does not start without it), `github-read-token` and
-`github-webhook-secret`; with `LK_MCP_AUTH=personal_token` also `mcp-token-hmac-key` (at least 32 random bytes as base64url; the hub does not
-start in that mode without it); the KMS keys and their roles for the hub's Google service account; the CA certificates, made once with
-`hub ca-init`; the Entra app registration.
+**Made outside this chart** (this chart creates none of it; `crates/hub/README.md` items 2 to 4 are the checklist). `charts/gcp` makes the
+KMS keys, the Secret Manager containers of the table, `write-preview-key`, `github-read-token`, `github-webhook-secret` and
+`mcp-token-hmac-key` (read only with `LK_MCP_AUTH=personal_token`), and the roles for the hub's Google service account on each, and
+`render.sh contract` compares the names with this chart's (its README lists the steps). What stays a person's: the key *versions* to
+put into `config.kms.*`; the values of the secrets (`write-preview-key` is read at start: the hub does not start without it; the mcp key is
+at least 32 random bytes as base64url, and the hub does not start in that mode without it); the CA certificates, made once with `hub
+ca-init`; the Entra app registration.
 
 ## The Jobs
 

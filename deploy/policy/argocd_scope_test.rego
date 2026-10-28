@@ -84,6 +84,35 @@ test_deny_a_workload_in_the_clouds_namespace if {
 	refused(platform(planted), "Deployment")
 }
 
+# The hub's keys and secret containers (09/fix, I1) are the cloud project's, in its namespace, and nobody else's.
+test_the_cloud_chart_has_keys_and_secrets_and_both_are_allowed if {
+	kinds := {d.kind | some d in fixtures.gs_docs}
+	"KMSKeyRing" in kinds
+	"KMSCryptoKey" in kinds
+	"SecretManagerSecret" in kinds
+	count(deny) == 0 with input as platform(fixtures.gs_docs)
+}
+
+test_deny_a_key_in_the_workloads_namespace if {
+	planted := array.concat(fixtures.hub_docs, [json.patch(fixtures.gs_vault_key, [{"op": "replace", "path": "/metadata/namespace", "value": "lanekeeper"}])])
+	refused(platform(planted), "KMSCryptoKey")
+}
+
+test_deny_a_secret_in_the_workloads_namespace if {
+	planted := array.concat(fixtures.hub_docs, [json.patch(fixtures.gs_secret("write-preview-key"), [{"op": "replace", "path": "/metadata/namespace", "value": "lanekeeper"}])])
+	refused(platform(planted), "SecretManagerSecret")
+}
+
+test_deny_a_secret_version_in_the_clouds_namespace if {
+	planted := array.concat(fixtures.gs_docs, [{"apiVersion": "secretmanager.cnrm.cloud.google.com/v1beta1", "kind": "SecretManagerSecretVersion", "metadata": {"name": "x", "namespace": "lanekeeper-gcp"}}])
+	refused(platform(planted), "SecretManagerSecretVersion")
+}
+
+test_deny_a_key_version_in_the_clouds_namespace if {
+	planted := array.concat(fixtures.gs_docs, [{"apiVersion": "kms.cnrm.cloud.google.com/v1beta1", "kind": "KMSCryptoKeyVersion", "metadata": {"name": "x", "namespace": "lanekeeper-gcp"}}])
+	refused(platform(planted), "KMSCryptoKeyVersion")
+}
+
 test_deny_a_namespace_no_project_deploys_to if {
 	planted := array.concat(fixtures.hub_docs, [json.patch(fixtures.serviceaccount, [{"op": "replace", "path": "/metadata/namespace", "value": "elsewhere"}])])
 	refused(platform(planted), "elsewhere")

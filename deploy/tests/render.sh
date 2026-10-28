@@ -77,7 +77,7 @@ hook_ranges=deploy/values/hub/github-hook-ranges.yaml
 values_root=deploy/values
 # Every namespace of the manifest policies. dockerfile.rego is for Dockerfiles and is run by `just images-policy-test`; contract.rego
 # needs the two contract files and is run apart (`contract` mode).
-policy_namespaces=(hardening secrets topology resources storage network rbac database iam)
+policy_namespaces=(hardening secrets topology resources storage network rbac database iam kms)
 # The agent chart refuses to render without the hub's CA, which no values file carries (deploy/tests/testdata/README.md).
 synthetic_hub_ca=deploy/tests/testdata/synthetic-hub-ca.pem
 # The gcp chart refuses to render without the public key of the CI signing key, which no values file carries until a person makes the
@@ -1047,6 +1047,29 @@ planted_gcp_templates() {
     expect_render_failure "a bucket name that is not one" gcp-storage prod "name" --set buckets.docs.name=Bad_Name
     expect_render_failure "a Kubernetes service account that is not a name" gcp-storage prod "hubServiceAccount" --set workloadIdentity.hubServiceAccount=Bad_Name
     expect_render_failure "an unknown value" gcp-storage prod "not_a_value" --set not_a_value=1
+    # The hub's keys and secrets (09/fix, I1).
+    expect_render_failure "no key ring" gcp-storage prod "kms.keyRing is required" --set kms.keyRing=
+    expect_render_failure "a key ring that is not a name" gcp-storage prod "keyRing" --set kms.keyRing=Bad_Ring
+    expect_render_failure "no agent CA key" gcp-storage prod "kms.keys.agentCa is required" --set kms.keys.agentCa=
+    expect_render_failure "no replica CA key" gcp-storage prod "kms.keys.replicaCa is required" --set kms.keys.replicaCa=
+    expect_render_failure "no audit checkpoint key" gcp-storage prod "kms.keys.auditCheckpoint is required" --set kms.keys.auditCheckpoint=
+    expect_render_failure "no vault key" gcp-storage prod "kms.keys.vault is required" --set kms.keys.vault=
+    expect_render_failure "one key for both CAs" gcp-storage prod "four different keys" --set kms.keys.replicaCa=lanekeeper-agent-ca-prod
+    expect_render_failure "the vault key that is also the checkpoint key" gcp-storage prod "four different keys" --set kms.keys.vault=lanekeeper-audit-checkpoint-prod
+    expect_render_failure "a key that is not a name" gcp-storage prod "vault" --set kms.keys.vault=Bad_Key
+    expect_render_failure "a key held outside Google" gcp-storage prod "protectionLevel" --set kms.protectionLevel=EXTERNAL
+    expect_render_failure "no protection level" gcp-storage prod "protectionLevel" --set kms.protectionLevel=
+    expect_render_failure "a rotation period that is not seconds" gcp-storage prod "vaultRotationPeriod" --set kms.vaultRotationPeriod=weekly
+    expect_render_failure "a destroy delay that is not seconds" gcp-storage prod "destroyScheduledDuration" --set kms.destroyScheduledDuration=30d
+    expect_render_failure "a setting of a key that the chart does not have" gcp-storage prod "importOnly" --set kms.importOnly=true
+    expect_render_failure "the same secret twice" gcp-storage prod "a name twice" --set secrets.hub.webKey=lanekeeper-web-cert
+    expect_render_failure "the two CA certificates in one secret" gcp-storage prod "a name twice" --set secrets.hub.replicaCaCert=lanekeeper-agent-ca-cert
+    expect_render_failure "a secret that takes a constant of the hub's code" gcp-storage prod "constants" --set secrets.hub.loginCookie=write-preview-key
+    expect_render_failure "a secret name that is not a Kubernetes name" gcp-storage prod "webCert" --set secrets.hub.webCert=Web_Cert
+    expect_render_failure "a secret the hub does not have" gcp-storage prod "extra" --set secrets.hub.extra=x
+    expect_render_failure "a secrets key that is not a key" gcp-storage prod "cmekKey" --set secrets.cmekKey=nonsense
+    expect_render_failure "a secrets key in another location" gcp-storage prod "a key must be in the location of the secret" --set secrets.cmekKey=projects/example-project/locations/other-place/keyRings/r/cryptoKeys/k
+    expect_render_failure "a value for a secret" gcp-storage prod "value" --set secrets.value=hunter2
 }
 
 planted_gcp_storage() {
@@ -1094,6 +1117,57 @@ planted_gcp_storage() {
     plant "Workload Identity of another project's pool" gcp-storage prod 's#serviceAccount:example-project.svc.id.goog#serviceAccount:other-project.svc.id.goog#' "pool of"
     plant "a key granted to the hub" gcp-storage prod '/name: lanekeeper-gcs-agent-5cff04fb0a/,/^---$/s#serviceAccount:service-123456789012@gs-project-accounts.iam.gserviceaccount.com#serviceAccount:lanekeeper-hub@example-project.iam.gserviceaccount.com#' "Google-managed service agent"
 
+    # I1 (S5, S7, S8, S9, S10): the hub's keys and secrets, and the roles on them.
+    local in_key='/^kind: KMSCryptoKey$/,/^---$/' in_secret='/^kind: SecretManagerSecret$/,/^---$/' in_ring='/^kind: KMSKeyRing$/,/^---$/'
+    plant "cloudkms.admin for the hub" gcp-storage prod '/name: lanekeeper-hub-vault$/,/^---$/s#roles/cloudkms.cryptoKeyEncrypterDecrypter#roles/cloudkms.admin#' "not one of the roles"
+    plant "signing without verifying" gcp-storage prod '/name: lanekeeper-hub-sign-agent-ca$/,/^---$/s#roles/cloudkms.signerVerifier#roles/cloudkms.signer#' "not one of the roles"
+    plant "a signerVerifier on the vault key" gcp-storage prod '/name: lanekeeper-hub-sign-agent-ca$/,/^---$/s#name: lanekeeper-agent-ca-prod#name: lanekeeper-vault-prod#' "signerVerifier is for the agent CA"
+    plant "an encrypterDecrypter on a CA key" gcp-storage prod '/name: lanekeeper-hub-vault$/,/^---$/s#name: lanekeeper-vault-prod#name: lanekeeper-agent-ca-prod#' "only the vault key"
+    plant "a signerVerifier on the key ring" gcp-storage prod '/name: lanekeeper-hub-sign-agent-ca$/,/^---$/{s#kind: KMSCryptoKey#kind: KMSKeyRing#;s#name: lanekeeper-agent-ca-prod#name: lanekeeper#}' "on a KMSCryptoKey, never on"
+    plant "a signerVerifier on the project" gcp-storage prod '/name: lanekeeper-hub-sign-agent-ca$/,/^---$/{s#kind: KMSCryptoKey#kind: Project#;s#name: lanekeeper-agent-ca-prod#external: projects/example-project#}' "on a KMSCryptoKey, never on"
+    plant "a signerVerifier on a key that is not here" gcp-storage prod '/name: lanekeeper-hub-sign-agent-ca$/,/^---$/s#name: lanekeeper-agent-ca-prod#name: lanekeeper-another-prod#' "is not in this output"
+    plant "the database signs" gcp-storage prod '/name: lanekeeper-hub-sign-replica-ca$/,/^---$/s#lanekeeper-hub@#lanekeeper-db@#' "only the hub's service account signs"
+    plant "a person signs" gcp-storage prod '/name: lanekeeper-hub-sign-replica-ca$/,/^---$/s#member: ".*"#member: "user:someone@example.com"#' "not a service account"
+    plant "a group signs" gcp-storage prod '/name: lanekeeper-hub-sign-audit-checkpoint$/,/^---$/s#member: ".*"#member: "group:everyone@example.com"#' "not a service account"
+    plant "the vault key is used by a service agent" gcp-storage prod '/name: lanekeeper-hub-vault$/,/^---$/s#member: ".*"#member: "serviceAccount:service-123456789012@gs-project-accounts.iam.gserviceaccount.com"#' "made here"
+    plant "the vault key is used by the database" gcp-storage prod '/name: lanekeeper-hub-vault$/,/^---$/s#lanekeeper-hub@#lanekeeper-db@#' "Google-managed service agent"
+    plant "a secretAccessor at project level" gcp-storage prod '/name: lanekeeper-hub-read-write-preview-key$/,/^---$/{s#kind: SecretManagerSecret#kind: Project#;s#name: write-preview-key#external: projects/example-project#}' "on a SecretManagerSecret, never on"
+    plant "a secretAccessor on a secret that is not here" gcp-storage prod '/name: lanekeeper-hub-read-write-preview-key$/,/^---$/s#name: write-preview-key#name: another-secret#' "is not in this output"
+    plant "the database reads a secret" gcp-storage prod '/name: lanekeeper-hub-read-github-read-token$/,/^---$/s#lanekeeper-hub@#lanekeeper-db@#' "only the hub's service account reads"
+    plant "a person reads a secret" gcp-storage prod '/name: lanekeeper-hub-read-lanekeeper-web-key$/,/^---$/s#member: ".*"#member: "user:someone@example.com"#' "not a service account"
+    plant "everyone reads a secret" gcp-storage prod '/name: lanekeeper-hub-read-lanekeeper-web-key$/,/^---$/s#member: ".*"#member: "allAuthenticatedUsers"#' "which is everyone"
+    plant "a secret administrator" gcp-storage prod '/name: lanekeeper-hub-read-write-preview-key$/,/^---$/s#roles/secretmanager.secretAccessor#roles/secretmanager.admin#' "not one of the roles"
+    plant "a CA key that decrypts" gcp-storage prod "$in_key"'{/name: lanekeeper-agent-ca-prod$/,/^---$/s#purpose: ASYMMETRIC_SIGN#purpose: ENCRYPT_DECRYPT#}' "must be ASYMMETRIC_SIGN"
+    plant "a CA key of another algorithm" gcp-storage prod "$in_key"'{/name: lanekeeper-replica-ca-prod$/,/^---$/s#algorithm: EC_SIGN_P256_SHA256#algorithm: RSA_SIGN_PSS_2048_SHA256#}' "EC_SIGN_P256_SHA256"
+    plant "a checkpoint key of another curve" gcp-storage prod "$in_key"'{/name: lanekeeper-audit-checkpoint-prod$/,/^---$/s#algorithm: EC_SIGN_P256_SHA256#algorithm: EC_SIGN_P384_SHA384#}' "audit-checkpoint-signing"
+    plant "a vault key that signs" gcp-storage prod "$in_key"'{/name: lanekeeper-vault-prod$/,/^---$/s#purpose: ENCRYPT_DECRYPT#purpose: ASYMMETRIC_SIGN#}' "must be ENCRYPT_DECRYPT"
+    plant "a vault key of another algorithm" gcp-storage prod "$in_key"'{/name: lanekeeper-vault-prod$/,/^---$/s#algorithm: GOOGLE_SYMMETRIC_ENCRYPTION#algorithm: EC_SIGN_P256_SHA256#}' "GOOGLE_SYMMETRIC_ENCRYPTION"
+    plant "a key in software in prod" gcp-storage prod "$in_key"'s#protectionLevel: HSM#protectionLevel: SOFTWARE#' "HSM in prod"
+    plant "a key without a protection level" gcp-storage prod "$in_key"'{/protectionLevel: HSM/d}' "protectionLevel"
+    plant "an imported key" gcp-storage prod "$in_key"'{/name: lanekeeper-agent-ca-prod$/,/^---$/s#^  purpose: ASYMMETRIC_SIGN$#&\n  importOnly: true#}' "imported"
+    plant "a key without a first version" gcp-storage prod "$in_key"'{/name: lanekeeper-agent-ca-prod$/,/^---$/s#^  purpose: ASYMMETRIC_SIGN$#&\n  skipInitialVersionCreation: true#}' "skipInitialVersionCreation"
+    plant "a signing key that rotates" gcp-storage prod "$in_key"'{/name: lanekeeper-agent-ca-prod$/,/^---$/s#^  destroyScheduledDuration:#  rotationPeriod: "7776000s"\n&#}' "rotationPeriod"
+    plant "a key in a ring that is not here" gcp-storage prod "$in_key"'{/name: lanekeeper-agent-ca-prod$/,/^---$/s#^    name: lanekeeper$#    name: elsewhere#}' "key ring"
+    plant "two keys of one purpose" gcp-storage prod "$in_key"'{/name: lanekeeper-replica-ca-prod$/,/^---$/s#lanekeeper.io/purpose: replica-ca#lanekeeper.io/purpose: agent-ca#}' "exactly one agent-ca key"
+    plant "a key of no purpose" gcp-storage prod "$in_key"'{/name: lanekeeper-vault-prod$/,/^---$/s#lanekeeper.io/purpose: vault#lanekeeper.io/purpose: scratch#}' "lanekeeper.io/purpose"
+    plant "keys deleted with their resource" gcp-storage prod "$in_key"'s#deletion-policy: abandon#deletion-policy: delete#' "deletion-policy: abandon"
+    plant "keys that a sync may prune" gcp-storage prod "$in_key"'s#Prune=false#Prune=true#' "Prune=false"
+    plant "a key ring deleted with its resource" gcp-storage prod "$in_ring"'s#deletion-policy: abandon#deletion-policy: delete#' "deletion-policy: abandon"
+    plant "a key ring that a sync may prune" gcp-storage prod "$in_ring"'s#Prune=false#Prune=true#' "Prune=false"
+    plant "a key ring without a location" gcp-storage prod "$in_ring"'{/^  location: /d}' "names no location"
+    plant "secrets deleted with their resource" gcp-storage prod "$in_secret"'s#deletion-policy: abandon#deletion-policy: delete#' "deletion-policy: abandon"
+    plant "secrets that a sync may prune" gcp-storage prod "$in_secret"'s#Prune=false#Prune=true#' "Prune=false"
+    plant "a secret that holds a value" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/s#^spec:$#spec:\n  secretData: {value: hunter2}#}' "replication and nothing else"
+    plant "a secret that expires" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/s#^spec:$#spec:\n  ttl: 3600s#}' "replication and nothing else"
+    plant "a secret with a rotation" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/s#^spec:$#spec:\n  rotation: {rotationPeriod: 3600s}#}' "replication and nothing else"
+    plant "secrets without a key" gcp-storage prod "$in_secret"'s#^( *)external: .*#\1external: ""#' "customer-managed key"
+    plant "secrets with a key that is not one" gcp-storage prod "$in_secret"'s#^( *)external: .*#\1external: "lanekeeper-secrets"#' "not a Cloud KMS key"
+    plant "automatic replication" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/{/^    userManaged:$/,/^---$/{/^---$/!d}}}' "userManaged"
+    plant "secrets of no purpose" gcp-storage prod "$in_secret"'s#lanekeeper.io/purpose: secret#lanekeeper.io/purpose: docs#' "lanekeeper.io/purpose must be secret"
+    plant "a key of the secrets that Secret Manager may not use" gcp-storage prod 's#gcp-sa-secretmanager#compute-system#' "no IAMPolicyMember grants the Secret Manager service agent"
+    plant_append "a secret version, which holds a value" gcp-storage prod $'apiVersion: secretmanager.cnrm.cloud.google.com/v1beta1\nkind: SecretManagerSecretVersion\nmetadata:\n  name: write-preview-key-1\n  namespace: lanekeeper-gcp\nspec:\n  secretRef: {name: write-preview-key}\n  secretData: {value: aHVudGVyMg==}' "never a value"
+    plant_append "a Kubernetes Secret in the cloud chart" gcp-storage prod $'apiVersion: v1\nkind: Secret\nmetadata:\n  name: write-preview-key\n  namespace: lanekeeper-gcp\nstringData:\n  value: hunter2' "charts render no Secret"
+
     # The fallback (plan 09 A11b, Q29): a bucket without a key renders with a warning, which fails in prod and staging.
     local out
     if ! out="$(render gcp-storage prod --set buckets.docs.cmekKey= 2>&1)"; then
@@ -1102,6 +1176,12 @@ planted_gcp_storage() {
         printf '%s\n' "$out" >"$work/fallback.yaml"
         expect_policy_failure "the fallback fails in prod" "$work/fallback.yaml" gcp-storage prod "Google-managed"
         check_policy "$work/fallback.yaml" gcp-storage kind >/dev/null 2>&1 || true
+    fi
+    if ! out="$(render gcp-storage prod --set secrets.cmekKey= 2>&1)"; then
+        fail "the fallback (no key for the secrets) did not render: $(tail -n1 <<<"$out")"
+    else
+        printf '%s\n' "$out" >"$work/fallback-secrets.yaml"
+        expect_policy_failure "the fallback for the secrets fails in prod" "$work/fallback-secrets.yaml" gcp-storage prod "Google-managed"
     fi
 
     # What the isolation is and is not.
@@ -1552,6 +1632,35 @@ planted_argocd() {
     else
         echo "  ok  a CronJob in the hub's output is not allowed by its project"
     fi
+    # 09/fix, I1: the cloud project allows the hub's key ring, keys and secret containers, a project without one of the three refuses the chart,
+    # and a version of a key or a secret (where a value is) is allowed by no project.
+    render gcp-storage prod >"$rendered"
+    local group kind entry
+    for entry in "kms.cnrm.cloud.google.com KMSKeyRing" "kms.cnrm.cloud.google.com KMSCryptoKey" "secretmanager.cnrm.cloud.google.com SecretManagerSecret"; do
+        read -r group kind <<<"$entry"
+        sed -E "/^    - group: ${group//./\\.}\$/{N;/kind: ${kind}\$/d}" deploy/argocd/platform/projects.yaml >"$weaker"
+        if cmp -s "$weaker" deploy/argocd/platform/projects.yaml; then
+            fail "the sed expression that takes $kind out of the projects changed nothing, so the case tests nothing"
+        elif out="$(argocd_conftest argocd_scope "/work/scope-planted.yaml" "/work/projects-weaker.yaml" 2>&1)"; then
+            fail "the gcp chart's $kind was accepted by a project without it"
+        elif ! grep -qF "no project allows the kind $kind" <<<"$out"; then
+            fail "the gcp chart's $kind was refused by a project without it, but not for its kind:"$'\n'"$out"
+        else
+            echo "  ok  the cloud chart's $kind is not allowed by a project without it"
+        fi
+    done
+    for entry in "secretmanager.cnrm.cloud.google.com/v1beta1 SecretManagerSecretVersion" "kms.cnrm.cloud.google.com/v1beta1 KMSCryptoKeyVersion"; do
+        read -r group kind <<<"$entry"
+        render gcp-storage prod >"$rendered"
+        printf -- '---\napiVersion: %s\nkind: %s\nmetadata:\n  name: planted\n  namespace: lanekeeper-gcp\n' "$group" "$kind" >>"$rendered"
+        if out="$(argocd_conftest argocd_scope "/work/scope-planted.yaml" deploy/argocd/platform/projects.yaml 2>&1)"; then
+            fail "a $kind in the gcp chart's output was accepted by the scope check"
+        elif ! grep -qF "no project allows the kind $kind" <<<"$out"; then
+            fail "a $kind in the gcp chart's output was refused, but not for its kind:"$'\n'"$out"
+        else
+            echo "  ok  a $kind in the cloud chart's output is not allowed by its project"
+        fi
+    done
     render agent sit1 >"$rendered"
     printf -- '---\napiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  name: planted\n' >>"$rendered"
     if out="$(argocd_conftest argocd_scope "/work/scope-planted.yaml" deploy/argocd/swimlanes/sit1.yaml 2>&1)"; then
@@ -1582,6 +1691,184 @@ doc_field() {
         }
         END { flush() }
     ' "$1"
+}
+
+# hub_code_secrets: the Secret Manager secrets whose names are constants of the hub's code and not settings (crates/hub/HARDENING.md), one
+# per line, read from the code so that a renamed constant is a failure here and not a hub that cannot start: the preview key (hub-writes), the
+# personal-token key (hub-mcp), and the defaults of LK_GIT_READ_REF and LK_GIT_WEBHOOK_REF (hub), printed as `NAME=VARIABLE` for the last two,
+# because a chart that sets the variable overrides the name. The count (4) must be what was read: a reader that no longer understands the code
+# is an error, never an empty list that every chart passes (09/fix, I1).
+hub_code_secrets() {
+    local out count
+    out="$(
+        sed -nE 's/^pub const PREVIEW_KEY_SECRET: &str = "([^"]+)";.*/\1=/p' crates/hub-writes/src/config.rs
+        sed -nE 's/^pub const KEY_SECRET_NAME: &str = "([^"]+)";.*/\1=/p' crates/hub-mcp/src/auth/pat.rs
+        sed -nE 's/.*secret_ref_or\("(LK_GIT_(READ|WEBHOOK)_REF)", "([^"]+)"\).*/\3=\1/p' crates/hub/src/config/git.rs
+    )"
+    count="$(grep -c . <<<"$out" || true)"
+    if [ "$count" != 4 ]; then
+        echo "render.sh: read $count constant secret names from the hub's code (hub-writes config.rs, hub-mcp auth/pat.rs, hub config/git.rs) and expected 4" >&2
+        return 1
+    fi
+    printf '%s\n' "$out"
+}
+
+# gcp_hub_objects FILE: what the gcp chart's output says about the hub's secrets and keys, one record a line:
+#   secret|NAME|PROJECT           a SecretManagerSecret
+#   key|FULL NAME|NAME|PURPOSE    a KMSCryptoKey, as projects/P/locations/L/keyRings/R/cryptoKeys/K, with its lanekeeper.io/purpose label
+#   binding|ROLE|KIND|NAME|MEMBER an IAMPolicyMember on a resource of this output by name (an external resource has NAME external:...)
+gcp_hub_objects() {
+    awk '
+        function flush() {
+            if (kind == "SecretManagerSecret") printf "secret|%s|%s\n", name, project
+            else if (kind == "KMSKeyRing") ring_location[name] = location
+            else if (kind == "KMSCryptoKey") { n++; key_name[n] = name; key_project[n] = project; key_ring[n] = ring; key_purpose[n] = purpose }
+            else if (kind == "IAMPolicyMember") printf "binding|%s|%s|%s|%s\n", role, refkind, refname, member
+            kind = name = project = location = ring = purpose = role = member = refkind = refname = ""; inref = 0; inring = 0
+        }
+        /^---$/ { flush(); next }
+        /^kind: / { kind = $2; next }
+        /^  name: / && name == "" { name = $2; next }
+        /^    cnrm.cloud.google.com\/project-id: / { project = $2; gsub(/"/, "", project); next }
+        /^    lanekeeper.io\/purpose: / { purpose = $2; next }
+        /^  location: / { location = $2; next }
+        /^  keyRingRef:/ { inring = 1; next }
+        inring && /^    name: / { ring = $2; inring = 0; next }
+        /^  role: / { role = $2; next }
+        /^  member: / { member = $2; gsub(/"/, "", member); next }
+        /^  resourceRef:/ { inref = 1; next }
+        inref && /^    kind: / { refkind = $2; next }
+        inref && /^    name: / { refname = $2; next }
+        inref && /^    external: / { refname = "external:" $2; next }
+        END {
+            flush()
+            for (i = 1; i <= n; i++)
+                printf "key|projects/%s/locations/%s/keyRings/%s/cryptoKeys/%s|%s|%s\n", key_project[i], ring_location[key_ring[i]], key_ring[i], key_name[i], key_name[i], key_purpose[i]
+        }
+    ' "$1"
+}
+
+# cross_check_hub_names GCP HUB: the hub reads each Secret Manager secret and uses each Cloud KMS key that the gcp chart makes, in the project
+# it names, and its account may use each one for the one thing it is for (09/fix, I1; S5, S7, S8, S9). A name that differs in the two charts is a
+# hub that cannot start (a secret that does not exist, a key that is not there) or a container that nothing reads; both are found here and not on
+# the first apply. Print every disagreement; return 1 if there is one.
+cross_check_hub_names() {
+    local gcp="$1" hub="$2" status=0 objs gsa project member name var ref key key_purpose record
+    objs="$(gcp_hub_objects "$gcp")"
+    gsa="$(grep -E 'iam.gke.io/gcp-service-account:' "$hub" | sed -E 's/.*: "?([^" ]+)"?$/\1/')"
+    member="serviceAccount:$gsa"
+    project="$(hub_env "$hub" LK_GCP_PROJECT)"
+
+    # The secrets: six named by the chart's variables, four constants of the code (two of them overridable by the chart's variables).
+    local names=() entry code
+    for var in LK_WEB_CERT_REF LK_WEB_KEY_REF LK_AGENT_CA_CERT_REF LK_REPLICA_CA_CERT_REF LK_ENTRA_CLIENT_AUTH_REF LK_ENTRA_COOKIE_KEY_REF; do
+        name="$(hub_env "$hub" "$var")"
+        if [ -z "$name" ]; then
+            echo "the hub chart does not set $var, which names a Secret Manager secret the hub reads"
+            status=1
+            continue
+        fi
+        names+=("$name|$var")
+    done
+    code="$(hub_code_secrets)" || return 1
+    while IFS= read -r entry; do
+        name="${entry%%=*}"
+        var="${entry#*=}"
+        if [ -n "$var" ] && [ -n "$(hub_env "$hub" "$var")" ]; then
+            name="$(hub_env "$hub" "$var")"
+        else
+            var="a constant of the hub's code"
+        fi
+        names+=("$name|$var")
+    done <<<"$code"
+    local seen=" "
+    for entry in "${names[@]}"; do
+        name="${entry%%|*}"
+        var="${entry#*|}"
+        seen+="$name "
+        if ! grep -qxF -- "secret|$name|$project" <<<"$objs"; then
+            record="$(grep -E '^secret\|' <<<"$objs" | grep -F -- "|$name|" | head -n1 || true)"
+            if [ -n "$record" ]; then
+                echo "the hub reads the secret '$name' ($var) from project '$project' (LK_GCP_PROJECT) and the gcp chart makes it in project '$(cut -d'|' -f3 <<<"$record")'"
+            else
+                echo "the hub reads Secret Manager secret '$name' ($var) and the gcp chart makes no SecretManagerSecret of that name"
+            fi
+            status=1
+        fi
+        if ! grep -qxF -- "binding|roles/secretmanager.secretAccessor|SecretManagerSecret|$name|$member" <<<"$objs"; then
+            echo "the gcp chart does not give $member roles/secretmanager.secretAccessor on the secret '$name' ($var): the hub could not read it"
+            status=1
+        fi
+    done
+    while IFS='|' read -r _ name _; do
+        [ -n "$name" ] || continue
+        case "$seen" in *" $name "*) ;; *)
+            echo "the gcp chart makes the secret '$name', which the hub does not read (its LK_*_REF variables and the constants of its code name none of that name)"
+            status=1
+            ;;
+        esac
+    done < <(grep -E '^secret\|' <<<"$objs")
+
+    # The keys: three signing keys named by version, and the vault key named without one. Each has the role for its one use, and a key is for one use.
+    local used=" " role refs=" "
+    for entry in LK_AGENT_CA_KMS_REF:agent-ca:roles/cloudkms.signerVerifier LK_REPLICA_CA_KMS_REF:replica-ca:roles/cloudkms.signerVerifier \
+        LK_AUDIT_CHECKPOINT_KMS_REF:audit-checkpoint-signing:roles/cloudkms.signerVerifier LK_VAULT_KMS_REF:vault:roles/cloudkms.cryptoKeyEncrypterDecrypter; do
+        var="${entry%%:*}"
+        key_purpose="${entry#*:}"
+        role="${key_purpose#*:}"
+        key_purpose="${key_purpose%%:*}"
+        ref="$(hub_env "$hub" "$var")"
+        if [ -z "$ref" ]; then
+            echo "the hub chart does not set $var, which names a Cloud KMS key the hub uses"
+            status=1
+            continue
+        fi
+        if [ "$var" = LK_VAULT_KMS_REF ]; then
+            case "$ref" in */cryptoKeyVersions/*)
+                echo "$var names a key version ($ref); the vault key is named without one, so that KMS picks the primary version and a rotation changes nothing the hub is told"
+                status=1
+                ;;
+            esac
+        else
+            case "$ref" in */cryptoKeyVersions/[0-9]*) ;; *)
+                echo "$var names no key version ($ref); the hub signs with one version of the key and the setting is projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/N"
+                status=1
+                ;;
+            esac
+        fi
+        key="${ref%%/cryptoKeyVersions/*}"
+        case "$refs" in *" $key "*)
+            echo "$var names the same key as another of the hub's keys ($key): each key is used for one thing, and the two CAs must be two keys (S5)"
+            status=1
+            ;;
+        esac
+        refs+="$key "
+        record="$(grep -E '^key\|' <<<"$objs" | grep -F -- "|$key|" | head -n1 || true)"
+        if [ -z "$record" ]; then
+            echo "the hub uses Cloud KMS key '$key' ($var) and the gcp chart makes no KMSCryptoKey of that name (project, location, key ring and key)"
+            status=1
+            continue
+        fi
+        used+="$key "
+        name="$(cut -d'|' -f3 <<<"$record")"
+        if [ "$(cut -d'|' -f4 <<<"$record")" != "$key_purpose" ]; then
+            echo "$var names '$key', which is the $(cut -d'|' -f4 <<<"$record") key in the gcp chart and not the $key_purpose key: a key is used for one thing"
+            status=1
+        fi
+        if ! grep -qxF -- "binding|$role|KMSCryptoKey|$name|$member" <<<"$objs"; then
+            echo "the gcp chart does not give $member $role on the key '$name' ($var): the hub could not use it"
+            status=1
+        fi
+    done
+    while IFS='|' read -r _ key name _; do
+        [ -n "$key" ] || continue
+        case "$used" in *" $key "*) ;; *)
+            echo "the gcp chart makes the key '$name', which the hub names in none of LK_AGENT_CA_KMS_REF, LK_REPLICA_CA_KMS_REF, LK_AUDIT_CHECKPOINT_KMS_REF and LK_VAULT_KMS_REF"
+            status=1
+            ;;
+        esac
+    done < <(grep -E '^key\|' <<<"$objs")
+    return "$status"
 }
 
 # cross_check DB GCP HUB: print every disagreement; return 1 if there is one.
@@ -1668,6 +1955,9 @@ cross_check() {
             status=1
         fi
     done < <(grep -hE '^ +(disk-encryption-kms-key):' "$db" "$hub" | sed -E 's/.*: "?([^" ]+)"?$/\1/' | sort -u)
+
+    # The secrets and the keys of the hub (09/fix, I1).
+    cross_check_hub_names "$gcp" "$hub" || status=1
     return "$status"
 }
 
@@ -1775,6 +2065,56 @@ planted_cross() {
     sed -E 's#^(  name: example-project-lanekeeper-audit-)prod$#\1prd#' "$gcp" >"$bad"
     expect_cross_failure "an audit-checkpoint bucket that the hub does not name" "$db" "$bad" "$hub" "the hub writes its audit checkpoints to bucket"
 
+    # I1: the secrets the hub reads and the keys it signs and wraps with are made by the gcp chart, in the project the hub names, and the hub's
+    # account may use each one, for the one thing the key is for.
+    local secret_doc=$'apiVersion: secretmanager.cnrm.cloud.google.com/v1beta1\nkind: SecretManagerSecret\nmetadata:\n  name: teams-hook\n  namespace: lanekeeper-gcp\n  annotations:\n    cnrm.cloud.google.com/project-id: "example-project"\nspec:\n  replication: {}'
+    local key_doc=$'apiVersion: kms.cnrm.cloud.google.com/v1beta1\nkind: KMSCryptoKey\nmetadata:\n  name: lanekeeper-spare-prod\n  namespace: lanekeeper-gcp\n  labels:\n    lanekeeper.io/purpose: vault\n  annotations:\n    cnrm.cloud.google.com/project-id: "example-project"\nspec:\n  keyRingRef:\n    name: lanekeeper\n  purpose: ENCRYPT_DECRYPT'
+    sed -E 's#(value: )"lanekeeper-web-cert"#\1"lanekeeper-web-certificate"#' "$hub" >"$bad"
+    expect_cross_failure "the hub reads a web certificate that no secret holds" "$db" "$gcp" "$bad" "makes no SecretManagerSecret of that name"
+    sed -E 's#(value: )"lanekeeper-entra-client"#\1"entra-client"#' "$hub" >"$bad"
+    expect_cross_failure "the hub reads an Entra client secret that no secret holds" "$db" "$gcp" "$bad" "'entra-client' (LK_ENTRA_CLIENT_AUTH_REF)"
+    drop_doc SecretManagerSecret write-preview-key <"$gcp" >"$bad"
+    expect_cross_failure "no container for a secret that is a constant of the hub's code" "$db" "$bad" "$hub" "'write-preview-key'"
+    drop_doc SecretManagerSecret mcp-token-hmac-key <"$gcp" >"$bad"
+    expect_cross_failure "no container for the personal-token key" "$db" "$bad" "$hub" "'mcp-token-hmac-key'"
+    drop_doc IAMPolicyMember lanekeeper-hub-read-github-webhook-secret <"$gcp" >"$bad"
+    expect_cross_failure "a secret the hub may not read" "$db" "$bad" "$hub" "does not give serviceAccount:lanekeeper-hub@example-project.iam.gserviceaccount.com roles/secretmanager.secretAccessor on the secret 'github-webhook-secret'"
+    sed -E '/name: lanekeeper-hub-read-lanekeeper-login-cookie$/,/^---$/s#lanekeeper-hub@#lanekeeper-db@#' "$gcp" >"$bad"
+    expect_cross_failure "a secret that only the database may read" "$db" "$bad" "$hub" "the secret 'lanekeeper-login-cookie'"
+    sed -E '/^  name: github-read-token$/,/^---$/s#project-id: "example-project"#project-id: "other-project"#' "$gcp" >"$bad"
+    expect_cross_failure "a secret made in another project than the hub reads" "$db" "$bad" "$hub" "in project 'other-project'"
+    sed -E 's#(value: )"example-project"#\1"other-project"#' "$hub" >"$bad"
+    expect_cross_failure "a hub that reads its secrets and keys from another project" "$db" "$gcp" "$bad" "(LK_GCP_PROJECT)"
+    append_doc "$gcp" "$secret_doc" >"$bad"
+    expect_cross_failure "a container for a secret that nothing reads" "$db" "$bad" "$hub" "makes the secret 'teams-hook', which the hub does not read"
+    sed -E 's#(value: ").*(/cryptoKeys/lanekeeper-agent-ca-prod/cryptoKeyVersions/1")#\1projects/example-project/locations/example-location/keyRings/elsewhere\2#' "$hub" >"$bad"
+    expect_cross_failure "a CA key in a key ring that the gcp chart does not make" "$db" "$gcp" "$bad" "makes no KMSCryptoKey of that name"
+    sed -E 's#cryptoKeys/lanekeeper-audit-checkpoint-prod/#cryptoKeys/lanekeeper-checkpoint-prod/#' "$hub" >"$bad"
+    expect_cross_failure "a checkpoint key that the gcp chart does not make" "$db" "$gcp" "$bad" "(LK_AUDIT_CHECKPOINT_KMS_REF)"
+    sed -E '/name: LK_REPLICA_CA_KMS_REF/{n;s#lanekeeper-replica-ca-prod#lanekeeper-agent-ca-prod#}' "$hub" >"$bad"
+    expect_cross_failure "one key for both CAs" "$db" "$gcp" "$bad" "the same key"
+    sed -E '/name: LK_AUDIT_CHECKPOINT_KMS_REF/{n;s#lanekeeper-audit-checkpoint-prod#lanekeeper-replica-ca-prod#}' "$hub" >"$bad"
+    expect_cross_failure "a checkpoint key that is the replica CA" "$db" "$gcp" "$bad" "is the replica-ca key in the gcp chart"
+    sed -E '/name: LK_VAULT_KMS_REF/{n;s#lanekeeper-vault-prod#lanekeeper-agent-ca-prod#}' "$hub" >"$bad"
+    expect_cross_failure "a vault that is the agent CA" "$db" "$gcp" "$bad" "is the agent-ca key in the gcp chart"
+    sed -E '/name: LK_VAULT_KMS_REF/{n;s#(lanekeeper-vault-prod)#\1/cryptoKeyVersions/1#}' "$hub" >"$bad"
+    expect_cross_failure "a vault key with a version" "$db" "$gcp" "$bad" "LK_VAULT_KMS_REF names a key version"
+    sed -E '/name: LK_AGENT_CA_KMS_REF/{n;s#/cryptoKeyVersions/1##}' "$hub" >"$bad"
+    expect_cross_failure "a CA key without a version" "$db" "$gcp" "$bad" "LK_AGENT_CA_KMS_REF names no key version"
+    drop_doc IAMPolicyMember lanekeeper-hub-sign-replica-ca <"$gcp" >"$bad"
+    expect_cross_failure "a replica CA that the hub may not sign with" "$db" "$bad" "$hub" "roles/cloudkms.signerVerifier on the key 'lanekeeper-replica-ca-prod'"
+    drop_doc IAMPolicyMember lanekeeper-hub-sign-audit-checkpoint <"$gcp" >"$bad"
+    expect_cross_failure "a checkpoint key that the hub may not sign with" "$db" "$bad" "$hub" "roles/cloudkms.signerVerifier on the key 'lanekeeper-audit-checkpoint-prod'"
+    drop_doc IAMPolicyMember lanekeeper-hub-vault <"$gcp" >"$bad"
+    expect_cross_failure "a vault key that the hub may not use" "$db" "$bad" "$hub" "roles/cloudkms.cryptoKeyEncrypterDecrypter on the key 'lanekeeper-vault-prod'"
+    sed -E '/name: lanekeeper-hub-sign-agent-ca$/,/^---$/s#lanekeeper-hub@#lanekeeper-db@#' "$gcp" >"$bad"
+    expect_cross_failure "an agent CA that only the database may sign with" "$db" "$bad" "$hub" "roles/cloudkms.signerVerifier on the key 'lanekeeper-agent-ca-prod'"
+    append_doc "$gcp" "$key_doc" >"$bad"
+    expect_cross_failure "a key that the hub does not name" "$db" "$bad" "$hub" "makes the key 'lanekeeper-spare-prod', which the hub names in none of"
+    # A person editing one side only: the secrets of the gcp chart are the hub chart's names, so changing the hub's default is a failure until the gcp values follow.
+    sed -E 's#(value: )"lanekeeper-agent-ca-cert"#\1"agent-ca-certificate"#' "$hub" >"$bad"
+    expect_cross_failure "a CA certificate secret renamed in the hub chart only" "$db" "$gcp" "$bad" "'agent-ca-certificate' (LK_AGENT_CA_CERT_REF)"
+
     # P4: the agent and the hub agree on the names the agent verifies.
     local agent=deploy/values/agent/sit1.yaml hubs=("$hub" "$work/x-hub-staging.yaml") out
     cross_check_agent "$agent" "${hubs[@]}" >/dev/null || fail "the unchanged sit1 values and the staging and prod hubs disagree"
@@ -1806,7 +2146,7 @@ planted_kubeconform() {
     out="$(kubeconform "${schema_args[@]}" deploy/tests/planted/kubeconform.yaml 2>&1)" || status=$?
     [ "$status" -ne 0 ] || fail "kubeconform accepted deploy/tests/planted/kubeconform.yaml"
     local kind
-    for kind in GCPBackendPolicy HealthCheckPolicy FQDNNetworkPolicy ComputeSecurityPolicy Gateway StatefulSet Job Deployment Role RoleBinding NetworkPolicy ConfigMap Cluster ScheduledBackup StorageBucket IAMPolicyMember IAMServiceAccount BinaryAuthorizationPolicy BinaryAuthorizationAttestor ContainerAnalysisNote Application AppProject; do
+    for kind in GCPBackendPolicy HealthCheckPolicy FQDNNetworkPolicy ComputeSecurityPolicy Gateway StatefulSet Job Deployment Role RoleBinding NetworkPolicy ConfigMap Cluster ScheduledBackup StorageBucket IAMPolicyMember IAMServiceAccount BinaryAuthorizationPolicy BinaryAuthorizationAttestor ContainerAnalysisNote KMSKeyRing KMSCryptoKey SecretManagerSecret Application AppProject; do
         grep -E -q -- "- $kind planted is invalid" <<<"$out" || fail "kubeconform did not refuse the planted $kind:"$'\n'"$out"
     done
     grep -q -- "could not find schema for SomethingWithoutASchema" <<<"$out" || fail "a kind without a schema was skipped, not refused"

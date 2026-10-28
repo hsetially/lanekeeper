@@ -33,6 +33,21 @@ cmek:
     # The key of the hub's mirror disks (charts/hub storage.cmekKey) and of the database's (charts/db storage.cmekKey).
     - projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/lanekeeper-disk-staging
 
+# The hub's keys and the secrets it reads (09/fix, I1). EXAMPLE names, the ones that deploy/values/hub/staging.yaml's config.kms.* name (render.sh
+# contract compares them): the key ring is not chosen yet (Q29), and a key ring cannot be deleted once it is made. The hub's keys are HSM keys.
+kms:
+  keyRing: lanekeeper
+  protectionLevel: HSM
+  keys:
+    agentCa: lanekeeper-agent-ca-staging
+    replicaCa: lanekeeper-replica-ca-staging
+    auditCheckpoint: lanekeeper-audit-checkpoint-staging
+    vault: lanekeeper-vault-staging
+
+secrets:
+  # EXAMPLE key (Q29), a key of its own in the ring of the other customer-managed keys. The Secret Manager service agent is given use of it.
+  cmekKey: projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/lanekeeper-secrets-staging
+
 # Admission (09/T6, plan 09 A5): images that CI did not sign. DRYRUN_AUDIT_LOG_ONLY audits and does not block, until Q24 (is Binary
 # Authorization available on the clusters?) is answered; ENFORCED_BLOCK_AND_AUDIT_LOG blocks, and read charts/gcp/README.md ("Admission") first.
 # The public key of the CI signing key is NOT here: the key does not exist until a person makes it in Cloud KMS, and the chart refuses to
