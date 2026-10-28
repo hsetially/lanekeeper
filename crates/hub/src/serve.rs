@@ -15,6 +15,7 @@ use hyper_util::server::conn::auto;
 use hyper_util::server::graceful::GracefulShutdown;
 use rustls::ServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::server::ResolvesServerCert;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use tokio_rustls::TlsAcceptor;
@@ -42,6 +43,19 @@ pub fn tls13_server_config(
         .with_no_client_auth()
         .with_single_cert(chain, key)
         .map_err(|_| TlsError::Certificate)?;
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    Ok(Arc::new(config))
+}
+
+/// Like [`tls13_server_config`], for a certificate that is looked up at each handshake and can be replaced while the listener
+/// runs (plan 18, G3: `RotatingServerCert`). Same protocol version, same ALPN names, no client certificates.
+pub fn tls13_resolver_config(resolver: Arc<dyn ResolvesServerCert>) -> Result<Arc<ServerConfig>, TlsError> {
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let mut config = ServerConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|_| TlsError::Certificate)?
+        .with_no_client_auth()
+        .with_cert_resolver(resolver);
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(Arc::new(config))
 }

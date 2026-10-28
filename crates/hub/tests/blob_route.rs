@@ -16,7 +16,7 @@ use axum::body::Body;
 use bytes::Bytes;
 use domain::{Role, UserStatus};
 use http::{Method, StatusCode, header};
-use hub::{BlobsModule, Deps, EventsModule, Hub, HubSettings};
+use hub::{BlobsModule, Deps, EventsModule, Hub, HubSettings, SessionEdge};
 use hub_platform::blobs::endpoint::{BlobState, DenyHashes};
 use hub_platform::events::fake::FakeEventSource;
 use hub_platform::events::metrics::EventMetrics;
@@ -62,7 +62,8 @@ fn rig(denied: &[domain::ContentHash]) -> Rig {
     );
     let hub = Hub::build(Deps {
         settings: HubSettings::default(),
-        auth,
+        session: SessionEdge::without_sessions(auth),
+        mounted: Vec::new(),
         modules: vec![
             Arc::new(BlobsModule::new(blobs)),
             Arc::new(EventsModule::new(sse)),

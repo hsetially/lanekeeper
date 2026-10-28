@@ -13,7 +13,8 @@ work_root=$(mktemp -d)
 trap 'rm -rf "$work_root"' EXIT
 
 # The caller's environment must not leak into the script under test.
-unset PLAYWRIGHT_INSTALL_CMD PLAYWRIGHT_INSTALL_ATTEMPTS PLAYWRIGHT_INSTALL_PAUSE PLAYWRIGHT_INSTALL_APT_CONF PLAYWRIGHT_INSTALL_SUDO
+unset PLAYWRIGHT_INSTALL_CMD PLAYWRIGHT_INSTALL_ATTEMPTS PLAYWRIGHT_INSTALL_PAUSE PLAYWRIGHT_INSTALL_APT_CONF PLAYWRIGHT_INSTALL_SUDO \
+  PLAYWRIGHT_INSTALL_LIMIT PLAYWRIGHT_INSTALL_TIMEOUT PLAYWRIGHT_INSTALL_SOURCES
 
 failures=0
 checks=0
@@ -80,7 +81,14 @@ if [ "$2" = always ] || [ "$runs" -le "$2" ]; then
 fi
 echo "stub-install: run $runs succeeds"
 EOF
-  chmod +x "$case_dir/bin/sleep" "$case_dir/bin/sudo-stub" "$case_dir/stub-install.sh"
+  # dpkg is stubbed so that a repair after a timeout never reaches the real one (the sudo stub runs its arguments through PATH).
+  cat >"$case_dir/bin/dpkg" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$(dirname "$0")/../dpkg-args"
+EOF
+  # The apt sources file that the script may rewrite on a retry, in the shape of the runner's: the mirror list.
+  printf '%s\n' 'Types: deb' 'URIs: mirror+file:/etc/apt/apt-mirrors.txt' 'Suites: noble' >"$case_dir/ubuntu.sources"
+  chmod +x "$case_dir/bin/sleep" "$case_dir/bin/sudo-stub" "$case_dir/bin/dpkg" "$case_dir/stub-install.sh"
 }
 
 # Runs the script under test in $case_dir/cwd with the stubs in place; extra NAME=value arguments are added to its environment.
@@ -93,6 +101,7 @@ run_script() {
       env PATH="$case_dir/bin:$PATH" \
         PLAYWRIGHT_INSTALL_SUDO="$case_dir/bin/sudo-stub" \
         PLAYWRIGHT_INSTALL_APT_CONF="$case_dir/80-playwright-retries" \
+        PLAYWRIGHT_INSTALL_SOURCES="$case_dir/ubuntu.sources" \
         "$@" bash "$script"
   ) >"$case_dir/out" 2>&1
   status=$?
@@ -188,12 +197,22 @@ case_production_defaults() {
 echo "$*" >>"$(dirname "$0")/../pnpm-args"
 exit 5
 EOF
-  chmod +x "$case_dir/bin/pnpm"
+  # A fake timeout, first in PATH, that records its first two arguments and then runs the command it was given.
+  cat >"$case_dir/bin/timeout" <<'EOF'
+#!/usr/bin/env bash
+echo "$1 $2" >>"$(dirname "$0")/../timeout-args"
+shift 2
+exec "$@"
+EOF
+  chmod +x "$case_dir/bin/pnpm" "$case_dir/bin/timeout"
   run_script
   expect_eq "exit status" 5 "$status"
   expect_eq "runs" 3 "$(lines_in "$case_dir/pnpm-args")"
   expect_eq "command line" "exec playwright install --with-deps chromium" "$(slurp "$case_dir/pnpm-args" | head -n 1)"
   expect_eq "pause" "10 10" "$(joined "$case_dir/sleeps")"
+  expect_eq "every attempt is capped at 240 s and killed 20 s later if it ignores the signal" \
+    "--kill-after=20 240 --kill-after=20 240 --kill-after=20 240" "$(joined "$case_dir/timeout-args")"
+  expect_eq "no repair when the attempts only failed" 0 "$(lines_in "$case_dir/dpkg-args")"
 }
 
 case_config_write_failure_is_not_fatal() {
@@ -217,6 +236,68 @@ case_bad_attempts_is_refused() {
   done
 }
 
+# A stub install that hangs on its first N runs (a stalled apt-get: no output, no exit) and records the apt sources file as it found
+# it. It sleeps with /bin/sleep, because the stub `sleep` of the case answers at once.
+hang_stub() { # hangs-before-success
+  {
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf 'echo run >>"%s/count"\n' "$case_dir"
+    printf 'cat "%s/ubuntu.sources" >>"%s/sources-seen"\n' "$case_dir" "$case_dir"
+    printf 'echo %s >>"%s/sources-seen"\n' "'--'" "$case_dir"
+    printf 'runs=$(wc -l <"%s/count" | tr -d " ")\n' "$case_dir"
+    printf 'if [ "$runs" -le %s ]; then /bin/sleep 30; fi\n' "$1"
+  } >"$case_dir/hang-install.sh"
+  printf 'bash %s/hang-install.sh' "$case_dir"
+}
+
+case_a_hanging_attempt_is_killed_repaired_and_retried() {
+  echo "case: an attempt that hangs is killed after the limit, dpkg is repaired, and the next attempt reads archive.ubuntu.com"
+  new_case
+  run_script PLAYWRIGHT_INSTALL_CMD="$(hang_stub 1)" PLAYWRIGHT_INSTALL_LIMIT=1 PLAYWRIGHT_INSTALL_PAUSE=0
+  expect_eq "exit status" 0 "$status"
+  expect_eq "two runs: the first was killed" 2 "$(lines_in "$case_dir/count")"
+  expect_contains "says the attempt timed out" "$out" "attempt 1 of 3 timed out after 1 s"
+  expect_contains "attempt 2 starts" "$out" "playwright-install: attempt 2 of 3"
+  expect_eq "dpkg was repaired once, through sudo" "--configure -a" "$(slurp "$case_dir/dpkg-args")"
+  seen=$(slurp "$case_dir/sources-seen")
+  first=${seen%%--*}
+  expect_contains "the first attempt saw the runner's mirror list" "$first" "mirror+file:/etc/apt/apt-mirrors.txt"
+  expect_contains "the second attempt saw archive.ubuntu.com" "$seen" "URIs: http://archive.ubuntu.com/ubuntu/"
+  expect_contains "the sources file keeps its other lines" "$(slurp "$case_dir/ubuntu.sources")" "Suites: noble"
+  expect_not_contains "the sources file no longer names the mirror list" "$(slurp "$case_dir/ubuntu.sources")" "mirror+file"
+}
+
+case_every_attempt_hangs() {
+  echo "case: when every attempt hangs the script gives up with the timeout's exit code"
+  new_case
+  run_script PLAYWRIGHT_INSTALL_CMD="$(hang_stub 9)" PLAYWRIGHT_INSTALL_LIMIT=1 PLAYWRIGHT_INSTALL_ATTEMPTS=2 PLAYWRIGHT_INSTALL_PAUSE=0
+  expect_eq "exit status is the timeout's" 124 "$status"
+  expect_eq "two runs" 2 "$(lines_in "$case_dir/count")"
+  expect_contains "gives up" "$out" "giving up after 2 attempts"
+  expect_contains "names the code" "$out" "last exit code was 124"
+}
+
+case_an_ordinary_failure_does_not_repair_dpkg() {
+  echo "case: a failure that is not a timeout does not repair dpkg, but the retry still reads archive.ubuntu.com"
+  new_case
+  run_script PLAYWRIGHT_INSTALL_CMD="$(stub_cmd 2 7)" PLAYWRIGHT_INSTALL_PAUSE=0
+  expect_eq "exit status" 0 "$status"
+  expect_eq "dpkg not run: nothing was cut off" 0 "$(lines_in "$case_dir/dpkg-args")"
+  expect_not_contains "not reported as a timeout" "$out" "timed out"
+  expect_contains "the retry reads archive.ubuntu.com" "$(slurp "$case_dir/ubuntu.sources")" "URIs: http://archive.ubuntu.com/ubuntu/"
+  expect_eq "the mirror is switched once, not on every retry" 1 "$(printf '%s' "$out" | grep -c 'apt now reads archive.ubuntu.com')"
+}
+
+case_bad_limit_is_refused() {
+  echo "case: a bad per-attempt limit is refused before anything runs"
+  for bad_value in 0 -5 abc 2.5; do
+    new_case
+    run_script PLAYWRIGHT_INSTALL_CMD="$(stub_cmd 0 1)" PLAYWRIGHT_INSTALL_LIMIT="$bad_value"
+    expect_eq "exit status for '$bad_value'" 2 "$status"
+    expect_eq "nothing ran for '$bad_value'" 0 "$(lines_in "$case_dir/count")"
+  done
+}
+
 for c in \
   case_first_attempt_succeeds \
   case_fails_twice_then_succeeds \
@@ -226,7 +307,11 @@ for c in \
   case_apt_config_is_overwritten \
   case_production_defaults \
   case_config_write_failure_is_not_fatal \
-  case_bad_attempts_is_refused; do
+  case_bad_attempts_is_refused \
+  case_a_hanging_attempt_is_killed_repaired_and_retried \
+  case_every_attempt_hangs \
+  case_an_ordinary_failure_does_not_repair_dpkg \
+  case_bad_limit_is_refused; do
   before=$failures
   "$c"
   if [ "$failures" -eq "$before" ]; then

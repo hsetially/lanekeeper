@@ -1,6 +1,7 @@
-//! P6, P7 (settings): the settings index of the 6,000-line YAML file takes 60 ms or less (`P6.index_settings`,
+//! P6, P7 (settings): the settings index of the 6,000-line YAML file takes 80 ms or less (`P6.index_settings`,
 //! `engine/index_settings_6000_lines`). The plan proposed 40 ms; T3 measured 45.8 ms p95
-//! and a human set 60 ms (`plans/04-fact-engine.blockers.md` has the measurements). The entry is registered.
+//! and a human set 60 ms (`plans/04-fact-engine.blockers.md` has the measurements), then raised it to 80 ms on 2026-10-26
+//! (`docs/decisions.md` D136). The entry is registered.
 //!
 //! The same file as `parse_flatten`, end to end as the hub runs it for every unique blob: decode, parse, flatten, and then
 //! tree-sitter reading the text a second time and being checked against the parser, setting by setting. The result is

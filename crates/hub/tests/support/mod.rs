@@ -15,7 +15,7 @@ use http::{Method, Request, StatusCode, header};
 use http_body_util::BodyExt;
 use hub::client_ip::PeerAddr;
 use hub::static_files::StaticFiles;
-use hub::{Deps, Hub, HubSettings, Module};
+use hub::{Deps, Hub, HubSettings, Module, SessionEdge};
 use hub_platform::{FakeSessionAuth, GuardedRouter, TEST_USER_HEADER};
 use tower::ServiceExt;
 
@@ -167,7 +167,8 @@ pub fn build(settings: HubSettings) -> TestHub {
     let counters = Arc::new(Counters::default());
     let hub = Hub::build(Deps {
         settings,
-        auth: auth.clone(),
+        session: SessionEdge::without_sessions(auth.clone()),
+        mounted: Vec::new(),
         modules: vec![Arc::new(TestModule {
             counters: Arc::clone(&counters),
         })],

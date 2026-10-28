@@ -1,0 +1,3 @@
+LK_DATABASE_URL_FILE=/run/db/uri
+LK_DB_CA_FILE=/run/ca/ca.pem
+FILE_CONTENT=postgres://u:hunter2@db.internal/x

@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use hub::serve::{ServeLimits, serve};
 use hub::static_files::StaticFiles;
-use hub::{Deps, Hub, HubSettings};
+use hub::{Deps, Hub, HubSettings, SessionEdge};
 use hub_platform::FakeSessionAuth;
 use tokio::net::TcpListener;
 
@@ -81,7 +81,8 @@ async fn main() -> ExitCode {
     }
     let Ok(hub) = Hub::build(Deps {
         settings,
-        auth: Arc::new(FakeSessionAuth::new()),
+        session: SessionEdge::without_sessions(Arc::new(FakeSessionAuth::new())),
+        mounted: Vec::new(),
         modules: Vec::new(),
         static_files: Some(Arc::new(files)),
         checks: Vec::new(),

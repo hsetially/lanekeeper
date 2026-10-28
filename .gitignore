@@ -10,3 +10,6 @@ web/dist
 
 # Agent worktrees (created by scripts/lk.mjs)
 /.worktrees/
+
+# insta's unreviewed snapshots (written next to the test file when a snapshot test fails; review, then `cargo insta accept`)
+*.pending-snap

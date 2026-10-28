@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use axum::body::Body;
 use http::{Method, StatusCode};
 use hub::ops::ReadyCheck;
-use hub::{Deps, Hub, HubSettings};
+use hub::{Deps, Hub, HubSettings, SessionEdge};
 use hub_platform::FakeSessionAuth;
 use support::{default_hub, get, header_of, request, send, text};
 
@@ -45,7 +45,8 @@ impl ReadyCheck for Hangs {
 fn hub_with(checks: Vec<(&'static str, Arc<dyn ReadyCheck>)>) -> Hub {
     Hub::build(Deps {
         settings: HubSettings::default(),
-        auth: Arc::new(FakeSessionAuth::new()),
+        session: SessionEdge::without_sessions(Arc::new(FakeSessionAuth::new())),
+        mounted: Vec::new(),
         modules: Vec::new(),
         static_files: None,
         checks,
@@ -72,6 +73,51 @@ async fn readyz_follows_the_checks_and_names_the_failing_one() {
     let response = send(&hub.ops, get("/readyz")).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(text(response).await, "ready\n");
+}
+
+/// Plan 18, T6 (G5): a feature this build does not have is said in `/readyz` and does not gate it. The body stays one line of fixed
+/// words (a feature's name is a constant of the code), so a probe that only reads the status is unaffected and a person who reads
+/// the body is told the truth.
+#[tokio::test]
+async fn a_note_is_said_in_the_body_of_a_ready_hub_and_does_not_gate_it() {
+    let db = Arc::new(AtomicBool::new(true));
+    let hub = hub_with(vec![("postgres", Arc::new(Flag(Arc::clone(&db))))]);
+    hub.readiness.note("docs_search");
+    let response = send(&hub.ops, get("/readyz")).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(text(response).await, "ready (not available: docs_search)\n");
+    // Noting it again says nothing twice; a second feature is listed after the first.
+    hub.readiness.note("docs_search");
+    hub.readiness.note("other_feature");
+    let response = send(&hub.ops, get("/readyz")).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        text(response).await,
+        "ready (not available: docs_search, other_feature)\n"
+    );
+}
+
+#[tokio::test]
+async fn a_hub_that_is_not_ready_says_what_fails_and_not_the_notes() {
+    let db = Arc::new(AtomicBool::new(false));
+    let hub = hub_with(vec![("postgres", Arc::new(Flag(Arc::clone(&db))))]);
+    hub.readiness.note("docs_search");
+    let response = send(&hub.ops, get("/readyz")).await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(text(response).await, "not ready: postgres\n");
+    // The hub is up the moment the check passes, and then the note comes back.
+    db.store(true, Ordering::SeqCst);
+    assert_eq!(
+        text(send(&hub.ops, get("/readyz")).await).await,
+        "ready (not available: docs_search)\n"
+    );
+}
+
+#[tokio::test]
+async fn a_hub_with_no_note_says_ready_and_nothing_more() {
+    let hub = hub_with(vec![]);
+    assert_eq!(text(send(&hub.ops, get("/readyz")).await).await, "ready\n");
+    assert!(hub.readiness.notes().is_empty());
 }
 
 #[tokio::test(start_paused = true)]
