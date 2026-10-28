@@ -76,6 +76,14 @@ after 60 s is killed (statefulset.yaml). One place for the two numbers, because 
 {{- define "lanekeeper-hub.startupProbePeriodSeconds" -}}2{{- end }}
 {{- define "lanekeeper-hub.startupProbeFailureThreshold" -}}30{{- end }}
 
+{{/*
+How many start steps the hub bounds one after the other, each by LK_START_TIMEOUT_SECS (crates/hub/src/process.rs, start_with): what it loads in
+parallel (the database and its schema, the web certificate, both CAs), the platform, sign-in, the audit checkpoint verifier, the write paths and the
+MCP server. It answers /healthz only after the last one (serve_hub), so the startup probe has to outlast all six, and the worst case is six
+steps that each take nearly their whole bound. A seventh step in the hub makes this number wrong, and nothing here would say so.
+*/}}
+{{- define "lanekeeper-hub.startSteps" -}}6{{- end }}
+
 {{/* A memory quantity in Gi or Mi as mebibytes (the units resources.rego reads); anything else stops the render. */}}
 {{- define "lanekeeper-hub.mebibytes" -}}
 {{- $q := toString .quantity -}}
@@ -150,15 +158,17 @@ Each stops the render and names the value, because "the hub exits 2" is otherwis
 {{- fail (printf "config.tuning: LK_SHUTDOWN_GRACE_SECS (%d) + LK_SHUTDOWN_DRAIN_SECS (%d) + 10 is %d s, and the pod's terminationGracePeriodSeconds is %d: the kubelet would kill a hub that is still draining" $wait $drain (add $wait $drain 10) $period) -}}
 {{- end -}}
 {{- /*
-  The hub answers /healthz after the database, the schema, the web certificate and both CAs have loaded, each bounded by LK_START_TIMEOUT_SECS (8),
-  and the kubelet restarts a container whose startup probe has not passed when its window ends. A bound that outlasts the window (with 10 s for
-  the process to begin and the probe to ask) would have the pod killed before the hub's own timeout can name the step that is slow.
+  The hub answers /healthz only when the whole start has finished (it binds the operations socket first, but serves it last), and the start is
+  a few steps in a row, each bounded by LK_START_TIMEOUT_SECS (8). The kubelet restarts a container whose startup probe has not passed when its
+  window ends, so the bounds of all the steps, and 10 s for the process to begin and the probe to ask, have to fit the window: otherwise a start
+  in which several steps are slow, and none is slow enough to fail, is killed before the hub can name the step.
 */ -}}
 {{- $window := mul (int (include "lanekeeper-hub.startupProbePeriodSeconds" .)) (int (include "lanekeeper-hub.startupProbeFailureThreshold" .)) -}}
+{{- $steps := int (include "lanekeeper-hub.startSteps" .) -}}
 {{- $start := 8 -}}
 {{- if hasKey $tuning "LK_START_TIMEOUT_SECS" -}}{{- $start = int (index $tuning "LK_START_TIMEOUT_SECS") -}}{{- end -}}
-{{- if gt (add $start 10) $window -}}
-{{- fail (printf "config.tuning: LK_START_TIMEOUT_SECS (%d) + 10 s is %d s, which outlasts the startup probe's %d s: the kubelet would kill a hub that is still starting, before its own timeout names the step that is slow" $start (add $start 10) $window) -}}
+{{- if gt (add (mul $start $steps) 10) $window -}}
+{{- fail (printf "config.tuning: LK_START_TIMEOUT_SECS (%d) bounds each of %d steps in a row, and %d x %d + 10 s is %d s, which outlasts the startup probe's %d s (at most %d): the kubelet would kill a hub that is still starting, before its own timeout names the step that is slow" $start $steps $steps $start (add (mul $start $steps) 10) $window (div (sub $window 10) $steps)) -}}
 {{- end -}}
 {{- /*
   The caches fill memory. The request is the P11 budget for the hub at design scale with the default caches (blob 512 MiB, corpus 256 MiB), and the limit

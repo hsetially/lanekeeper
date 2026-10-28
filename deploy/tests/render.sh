@@ -2265,10 +2265,12 @@ planted_templates() {
     expect_helm_failure "a corpus cache under 16 MiB" "LK_CORPUS_CACHE_MIB" --set-json 'config.tuning={"LK_CORPUS_CACHE_MIB":15}'
     expect_helm_failure "a corpus cache over 4 GiB" "LK_CORPUS_CACHE_MIB" --set-json 'config.tuning={"LK_CORPUS_CACHE_MIB":4097}'
     # 09/fix, round 1 (NB-8): no value the schema lets through may get the pod killed. The startup probe gives the hub 60 s (2 s x 30) to answer
-    # /healthz, which it does after the database, the schema, the web certificate and both CAs have loaded, each bounded by
-    # LK_START_TIMEOUT_SECS; and the caches fill the memory limit's headroom over the request, which is the P11 budget at the default caches.
+    # /healthz, which it does only when the whole start has finished (crates/hub/src/process.rs, serve_hub is the last step), and the start is six
+    # steps in a row, each bounded by LK_START_TIMEOUT_SECS (8): six of them and 10 s fit the window, seven do not. The caches fill the memory
+    # limit's headroom over the request, which is the P11 budget at the default caches.
     expect_helm_failure "a start timeout that outlasts the startup probe" "outlasts the startup probe" --set-json 'config.tuning={"LK_START_TIMEOUT_SECS":120}'
-    expect_helm_failure "a start timeout one second over the startup probe's room" "outlasts the startup probe" --set-json 'config.tuning={"LK_START_TIMEOUT_SECS":51}'
+    expect_helm_failure "a start timeout of 50 s, six times over the window" "outlasts the startup probe" --set-json 'config.tuning={"LK_START_TIMEOUT_SECS":50}'
+    expect_helm_failure "a start timeout one second over what six steps allow" "outlasts the startup probe" --set-json 'config.tuning={"LK_START_TIMEOUT_SECS":9}'
     expect_helm_failure "a corpus cache the memory limit cannot hold" "memory limit" --set-json 'config.tuning={"LK_CORPUS_CACHE_MIB":4096}'
     expect_helm_failure "a blob cache the memory limit cannot hold" "memory limit" --set-json 'config.tuning={"LK_BLOB_CACHE_MIB":4096}'
     expect_helm_failure "a blob cache given as a string" "memory limit" --set-json 'config.tuning={"LK_BLOB_CACHE_MIB":"4096"}'
@@ -2334,7 +2336,7 @@ accept_hub_variant() {
 
 hub_variants() {
     echo "== the hub chart with other values still passes every check"
-    accept_hub_variant "the settings of 09/fix, E3"  --set-json 'config.tuning={"LK_START_TIMEOUT_SECS":12,"LK_WEB_CERT_RELOAD_SECS":600,"LK_WRITES_RECONCILE_SECS":45,"LK_WRITES_EXPIRE_SECS":120,"LK_WRITES_PR_JOBS_SECS":10,"LK_WRITES_CLEANUP_SECS":7200,"LK_CORPUS_CACHE_MIB":512,"LK_GIT_BASE_BRANCH":"develop","LK_CONFIG_SERVER_DEPLOYMENT":"csp-configuration-server","LK_ENTRA_API_AUDIENCES":"api://22222222-2222-4222-8222-222222222222,22222222-2222-4222-8222-222222222222"}'
+    accept_hub_variant "the settings of 09/fix, E3"  --set-json 'config.tuning={"LK_START_TIMEOUT_SECS":6,"LK_WEB_CERT_RELOAD_SECS":600,"LK_WRITES_RECONCILE_SECS":45,"LK_WRITES_EXPIRE_SECS":120,"LK_WRITES_PR_JOBS_SECS":10,"LK_WRITES_CLEANUP_SECS":7200,"LK_CORPUS_CACHE_MIB":512,"LK_GIT_BASE_BRANCH":"develop","LK_CONFIG_SERVER_DEPLOYMENT":"csp-configuration-server","LK_ENTRA_API_AUDIENCES":"api://22222222-2222-4222-8222-222222222222,22222222-2222-4222-8222-222222222222"}'
     in_variant '^ +- name: LK_START_TIMEOUT_SECS$' "the settings of E3: the start timeout"
     in_variant '^ +- name: LK_WRITES_CLEANUP_SECS$' "the settings of E3: the cleanup interval"
     in_variant '^ +value: "develop"$' "the settings of E3: the base branch"
@@ -2405,7 +2407,8 @@ hub_variants() {
     [ -n "$named" ] || fail "a seed from a ConfigMap has no Job"
     seed_name_of --set seed.existingConfigMap=my-other-seed
     [ -n "$seed_name" ] && [ "$seed_name" != "$named" ] || fail "a seed from another ConfigMap has the name of the old Job"
-    accept_hub_variant "the longest start the startup probe has room for" --set-json 'config.tuning={"LK_START_TIMEOUT_SECS":50}'
+    accept_hub_variant "the longest start timeout the startup probe has room for" --set-json 'config.tuning={"LK_START_TIMEOUT_SECS":8}'
+    accept_hub_variant "a short start timeout" --set-json 'config.tuning={"LK_START_TIMEOUT_SECS":1}'
     accept_hub_variant "caches that use all the headroom the limit has" --set-json 'config.tuning={"LK_CORPUS_CACHE_MIB":768}'
     accept_hub_variant "bigger caches under a bigger limit" --set-json 'config.tuning={"LK_BLOB_CACHE_MIB":1024,"LK_CORPUS_CACHE_MIB":2048}' --set resources.limits.memory=4Gi
     accept_hub_variant "a collector" --set config.otlpEndpoint=http://otel-collector.monitoring.svc:4317

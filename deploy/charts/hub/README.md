@@ -53,9 +53,10 @@ would need the FQDN egress policy to name it too, gap N1), `LK_ENTRA_REDIRECT_PA
 
 `terminationGracePeriodSeconds` is 45, the contract's number. The chart refuses a `LK_SHUTDOWN_GRACE_SECS` and `LK_SHUTDOWN_DRAIN_SECS` whose sum
 plus 10 s is more than that (the hub's defaults, 5 and 25, are used for the one that is not set). In the same way it refuses a pod that the
-kubelet would kill, whatever the schema allows: a `LK_START_TIMEOUT_SECS` above 50 (the startup probe gives the hub 60 s to answer `/healthz`,
-which it does once the database, the schema, the web certificate and both CAs have loaded, and the chart keeps 10 s for the process to begin), and
-`LK_BLOB_CACHE_MIB` plus `LK_CORPUS_CACHE_MIB` more than the memory limit's headroom over the request above their defaults (512 and 256 MiB: the
+kubelet would kill, whatever the schema allows: a `LK_START_TIMEOUT_SECS` above 8 (the hub answers `/healthz` only when its whole start has
+finished, the start is six steps in a row that are each bounded by that timeout, and the startup probe gives it 60 s: six times 8, and 10 s for
+the process to begin, is the most that fits; a larger timeout needs a wider probe window, which is a change of the contract in `crates/hub/HARDENING.md`),
+and `LK_BLOB_CACHE_MIB` plus `LK_CORPUS_CACHE_MIB` more than the memory limit's headroom over the request above their defaults (512 and 256 MiB: the
 request, 1536 MiB, is the P11 budget at design scale, so with the limit at 2 Gi the two together may be 1280 MiB). **Not verified:** that the P11
 memory figure was measured with the default caches; a person who measures the pod should confirm the 768 MiB that the check subtracts.
 

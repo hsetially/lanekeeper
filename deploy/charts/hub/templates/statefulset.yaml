@@ -79,9 +79,10 @@ spec:
           ports:
             {{- include "lanekeeper-hub.ports" . | nindent 12 }}
           # Start-up is budgeted at 10 s (P11); the window allows 60 s so that a slow node is not a crash loop. The hub binds the
-          # operations socket first but answers on it only after the database, the schema, the web certificate and both CAs have loaded,
-          # so /healthz is not a check of the database: a start that cannot reach one of them exits 1 and restarts (CrashLoopBackOff).
-          # Without the startup probe the liveness probe would judge a start that has not finished.
+          # operations socket first but serves it last (crates/hub/src/process.rs, serve_hub): /healthz answers only when the whole start
+          # has finished, and a start that cannot reach the database, Secret Manager or KMS exits 1 on its own and restarts
+          # (CrashLoopBackOff). Once it answers, /healthz asks nothing of the database; /readyz does. Without the startup probe the
+          # liveness probe would judge a start that has not finished. LK_START_TIMEOUT_SECS is held to this window in _helpers.tpl.
           startupProbe:
             httpGet: {path: /healthz, port: ops}
             periodSeconds: {{ include "lanekeeper-hub.startupProbePeriodSeconds" . }}

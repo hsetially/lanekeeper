@@ -75,7 +75,7 @@ config:
   # hub's account needs roles/secretmanager.secretAccessor on it: the hub does not start in that mode without it. The chart does not
   # create it.
   # LK_SHUTDOWN_GRACE_SECS + LK_SHUTDOWN_DRAIN_SECS + 10 must not exceed the pod's terminationGracePeriodSeconds, 45: the chart refuses
-  # to render otherwise. It also refuses LK_START_TIMEOUT_SECS above 50 (the startup probe's 60 s window) and caches (LK_BLOB_CACHE_MIB +
+  # to render otherwise. It also refuses LK_START_TIMEOUT_SECS above 8 (six start steps in a row against the startup probe's 60 s window) and caches (LK_BLOB_CACHE_MIB +
   # LK_CORPUS_CACHE_MIB) raised above their defaults, 768 MiB, by more than the memory limit is above the request.
   tuning: {}
 
