@@ -1005,3 +1005,59 @@ test_agent_spool_next_to_the_export_is_not_inside_it if {
 	])
 	count(deny) == 0 with input as planted
 }
+
+# ============================================================================================================================
+# 09/fix, round 1 of the review (NB-1): `envFrom` is a second way to put names into the environment, and the rules above read only `env`.
+# A ConfigMap or Secret named there adds every key it holds as a variable, so none of the contract's rules about names, values and
+# references reaches them. The hub's pod and its Jobs carry none.
+# ============================================================================================================================
+
+env_from_config_map := [{"configMapRef": {"name": "evil"}}]
+
+env_from_secret := [{"secretRef": {"name": "evil"}}]
+
+env_from_prefixed := [{"prefix": "LK_", "configMapRef": {"name": "evil"}}]
+
+test_the_hub_and_its_jobs_without_env_from_pass if {
+	count(deny) == 0 with input as fixtures.hub
+}
+
+test_deny_env_from_a_config_map_in_the_hub if {
+	planted := fixtures.patch("StatefulSet", "lanekeeper-hub", [{"op": "add", "path": "/spec/template/spec/containers/0/envFrom", "value": env_from_config_map}])
+	refused(planted, "StatefulSet/lanekeeper-hub, container hub: envFrom")
+}
+
+test_deny_env_from_a_secret_in_the_hub if {
+	planted := fixtures.patch("StatefulSet", "lanekeeper-hub", [{"op": "add", "path": "/spec/template/spec/containers/0/envFrom", "value": env_from_secret}])
+	refused(planted, "StatefulSet/lanekeeper-hub, container hub: envFrom")
+}
+
+test_deny_env_from_with_a_prefix_in_the_hub if {
+	planted := fixtures.patch("StatefulSet", "lanekeeper-hub", [{"op": "add", "path": "/spec/template/spec/containers/0/envFrom", "value": env_from_prefixed}])
+	refused(planted, "envFrom")
+}
+
+test_deny_env_from_in_the_migration_job if {
+	refused(job_add(migrate, concat("", [job_c, "envFrom"]), env_from_config_map), "Job/lanekeeper-hub-migrate, container migrate: envFrom")
+}
+
+test_deny_env_from_in_the_seed_job if {
+	refused(job_add(seed, concat("", [job_c, "envFrom"]), env_from_config_map), "container seed: envFrom")
+}
+
+# An empty list adds nothing; it is not this rule's business.
+test_an_empty_env_from_adds_nothing if {
+	planted := fixtures.patch("StatefulSet", "lanekeeper-hub", [{"op": "add", "path": "/spec/template/spec/containers/0/envFrom", "value": []}])
+	msgs := deny with input as planted
+	count([m | some m in msgs; contains(m, "envFrom")]) == 0
+}
+
+# A workload that is not the hub's is not this rule's business.
+test_env_from_in_another_workload_is_not_the_hubs_business if {
+	planted := fixtures.with_doc({
+		"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": "other", "namespace": "lanekeeper"},
+		"spec": {"template": {"spec": {"containers": [{"name": "c", "image": "x", "envFrom": env_from_config_map}]}}},
+	})
+	msgs := deny with input as planted
+	count([m | some m in msgs; contains(m, "envFrom")]) == 0
+}

@@ -456,6 +456,10 @@ planted_hardening() {
     plant "the migration timeout in the hub" hub kind 's/^( *)- name: LK_WEB_DIST$/\1- name: LK_MIGRATE_TIMEOUT_SECS/' "LK_MIGRATE_TIMEOUT_SECS is a variable of the Jobs"
     plant "the seed timeout in the hub" hub kind 's/^( *)- name: LK_WEB_DIST$/\1- name: LK_SEED_TIMEOUT_SECS/' "LK_SEED_TIMEOUT_SECS is a variable of the Jobs"
 
+    # 09/fix, round 1 (NB-1): envFrom fills the environment past every rule that reads env.
+    plant "envFrom a ConfigMap in the hub" hub kind 's/^( *)- name: hub$/&\n\1  envFrom:\n\1    - configMapRef: {name: evil}/' "StatefulSet/lanekeeper-hub, container hub: envFrom"
+    plant "envFrom a Secret in the hub" hub prod 's/^( *)- name: hub$/&\n\1  envFrom:\n\1    - secretRef: {name: evil}/' "StatefulSet/lanekeeper-hub, container hub: envFrom"
+
     # 09/fix, P1, P2: where the other replicas dial this one.
     plant "the replica address in the contract's example service" hub kind 's/lanekeeper-hub-replicas\.lanekeeper\.svc:8445/lanekeeper-hub.lanekeeper.svc:8445/' "LK_REPLICA_ADDRESS is"
     plant "the replica address in another namespace" hub kind 's/lanekeeper-hub-replicas\.lanekeeper\.svc:8445/lanekeeper-hub-replicas.other.svc:8445/' "LK_REPLICA_ADDRESS is"
@@ -499,6 +503,9 @@ planted_hub_jobs() {
     plant "a migration timeout over the hub's limit" hub kind "$mig"'{/- name: LK_MIGRATE_TIMEOUT_SECS$/{n;s/value: .*/value: "7201"/}}' "LK_MIGRATE_TIMEOUT_SECS must be a whole number"
     plant "a seed timeout over the hub's limit" hub kind "$sd"'{/- name: LK_SEED_TIMEOUT_SECS$/{n;s/value: .*/value: "3601"/}}' "LK_SEED_TIMEOUT_SECS must be a whole number"
     plant "a reference in the migration Job" hub kind "$mig"'{/- name: LK_DB_CA_FILE$/{n;s/value: .*/valueFrom: {configMapKeyRef: {name: c, key: k}}/}}' "LK_DB_CA_FILE takes its value from a valueFrom"
+
+    plant "envFrom a ConfigMap in the migration Job" hub kind "$mig"'s/^( *)args: \["migrate"\]$/&\n\1envFrom:\n\1  - configMapRef: {name: evil}/' "Job/lanekeeper-hub-migrate, container migrate: envFrom"
+    plant "envFrom a prefixed ConfigMap in the seed Job" hub kind "$sd"'s#^( *)args: \["seed", "/etc/lanekeeper/seed/seed.yaml"\]$#&\n\1envFrom:\n\1  - prefix: LK_\n\1    configMapRef: {name: evil}#' "container seed: envFrom"
 
     # The volumes.
     plant "a Job with a volume it does not mount" hub kind "$mig"'s/^( *)volumes:$/&\n\1  - name: scratch\n\1    emptyDir: {}/' "volumes must be exactly"

@@ -236,6 +236,15 @@ deny contains msg if {
 	msg := sprintf("%s, container %s: %s takes its value from a valueFrom reference; the only one the contract allows is LK_REPLICA_NAME from fieldRef metadata.name, exactly (HARDENING.md)", [lk.who(x.doc), x.container.name, e.name])
 }
 
+# `envFrom` is the other way to fill the environment: every key of a ConfigMap or Secret becomes a variable, under a prefix of the
+# author's choosing. The rules above and below read `env` and nothing else, so a name that comes in through it is not held to the
+# contract's names, values or references. The hub's pod and its Jobs have no use for it: their settings are named one by one in the chart.
+deny contains msg if {
+	some x in hub_workload_containers
+	count(object.get(x.container, "envFrom", [])) > 0
+	msg := sprintf("%s, container %s: envFrom fills the environment with every key of a ConfigMap or Secret, past the rules about the hub's variables; name each variable in env instead (HARDENING.md)", [lk.who(x.doc), x.container.name])
+}
+
 # Every replica has its own name. A fixed one would give three replicas one identity (the certificate's, the leases', agent_connections').
 deny contains msg if {
 	some sts in lk.hub_statefulsets
