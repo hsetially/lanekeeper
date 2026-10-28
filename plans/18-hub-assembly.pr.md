@@ -6,7 +6,7 @@
 
 `hub` was a binary that read its settings and exited 1: nothing linked the identity module, the registry, the write paths or the MCP server in, and no listener, migration, signal handler or job was started. It is now a server: `hub` (serve), `hub migrate`, `hub seed <file> [--dry-run]` and `hub ca-init`. The human's answers at the plan gate are in `plans/18-hub-assembly.answers.md` (G2 per-session stream end, G8 the 12 MiB edit routes, G20 no merge order with prompt 09).
 
-Eight task commits `18/T1` to `18/T8`, in order; then the FINAL step, three `18/fix:` commits found by the first real fuzz run, two review rounds, a review-fix round, and three merges of `origin/main` (the last one brings in #39). **The branch also carries `3e68646`** (`prompts/18-hub-assembly.md`, `prompts/README.md`, the base of `docs/hub-assembly-survey.md`) from `docs/18-hub-assembly-prompt`, which has no PR yet: settle which goes first.
+Eight task commits `18/T1` to `18/T8`, in order; then the FINAL step, three `18/fix:` commits found by the first real fuzz run, two review rounds, a review-fix round, and three merges of `origin/main` (the last one brings in #39). **The branch also carries `3e68646`** (`prompts/18-hub-assembly.md`, `prompts/README.md`, the base of `docs/hub-assembly-survey.md`, from the branch `docs/18-hub-assembly-prompt`). The human decided (2026-10-28) that **this PR carries it**; that docs branch gets no PR of its own.
 
 ## Gates
 
@@ -39,7 +39,7 @@ Details, with output: `plans/18-hub-assembly.evidence.md`.
 
 S1, S2, S3, S4, S5, S6, S7, S9, S10, S12, S16, S18, S21 (the prompt's list), each traced to code and to a test in the evidence file. Also touched: **S11** (D137, below) and S22 (four fuzz targets).
 
-- **D137 relaxes S11 for exactly two routes, at the human's decision (plan gate, G8).** `PUT /files` and `POST /drafts` take a body of up to 12 MiB + 64 KiB, only for a live session of an Active user with at least the Editor role; every other route and every request without such a session keeps 4 MiB; the GitHub webhook is 1 MiB. Narrower than the answer in one way (Editor or above, not any session) and bounded in another (at most 8 large bodies in flight per replica, about 100 MiB). Tests: `body_limits::*`, including `at_most_eight_large_bodies_are_read_at_once` (watched red with the control removed). **S11's wording in `docs/security.md` still says 4 MiB and needs a follow-up by whoever owns that file.**
+- **D137 relaxes S11 for exactly two routes, at the human's decision (plan gate, G8).** `PUT /files` and `POST /drafts` take a body of up to 12 MiB + 64 KiB, only for a live session of an Active user with at least the Editor role; every other route and every request without such a session keeps 4 MiB; the GitHub webhook is 1 MiB. Narrower than the answer in one way (Editor or above, not any session) and bounded in another (at most 8 large bodies in flight per replica, about 100 MiB). Tests: `body_limits::*`, including `at_most_eight_large_bodies_are_read_at_once` (watched red with the control removed). S11's wording in `docs/security.md` is updated to match by [#40](https://github.com/hsetially/lanekeeper/pull/40) (neither file is prompt 18's).
 - **G2 per-session stream end** uses the three approved `hub-platform` files; `SessionAuth::binding_valid` refuses by default so an implementation that names a session and cannot answer for it fails closed.
 - **Residuals stated in the threat model, not fixed:** an unaudited `hub migrate`; the `hub seed` operator is not recorded (only the file's SHA-256); up to 12 MiB buffered per edit request (8 at once); MCP session affinity across replicas is unverified on GCP; identity's own router keeps an inner CSRF check on about ten routes (G1); the two CA references are compared as written (a project id versus a project number for one key is not caught); 33 admin tables have no route and no owner.
 
@@ -85,9 +85,9 @@ Round 1 (`plans/18-hub-assembly.review.md`): CHANGES REQUESTED. Blocking: B1 (kn
 
 ## Needs a human
 
-- **Confirm D145 on this PR:** it says the human chose option A for B1 in chat, which the repository cannot show.
-- Update S11 in `docs/security.md` to match D137, and add `*.pending-snap` to `.gitignore` (neither file is prompt 18's).
-- Settle the merge order with the docs branch (`3e68646`), and with prompt 09 (no order is required, G20; the hunks are additive).
+- **Confirm D145 on this PR:** it says the human chose option A for B1 in chat (S5's source scan allows exactly `web_tls.rs::decode`, the web listener's own TLS key), which the repository cannot show.
+- **Merge [#40](https://github.com/hsetially/lanekeeper/pull/40) with or after this PR.** It updates S11 in `docs/security.md` to say what D137 decided and adds `*.pending-snap` to `.gitignore` (neither file is prompt 18's); its S11 text cites D137, which exists only once this PR merges.
+- Prompt 09: no merge order is required (G20; the hunks are additive).
 - Optional follow-up: refuse the two CA certificates when their public keys are equal (catches the spellings the as-written comparison misses).
 
 ## Labels
