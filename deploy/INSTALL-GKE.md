@@ -271,7 +271,7 @@ gcloud projects describe <PROJECT_ID> --format='value(projectNumber)'
 | nodes in at least three zones. The hub's pods and the database's instances have required anti-affinity over `topology.kubernetes.io/zone` | `hub:topology.mode`, `deploy/charts/db/README.md` | pods stay Pending |
 | room for the pods: each hub replica asks for 500m CPU and 1536 MiB and may use 4 CPU and 2 GiB; each database instance is sized at 2 CPU, 2 GiB and 20 GiB (a placeholder until the load test) | `deploy/charts/hub/values.yaml`, `deploy/charts/db/README.md` | pods stay Pending |
 | the Gateway controller with the class `gke-l7-global-external-managed`, and the kinds `GCPBackendPolicy` and `HealthCheckPolicy` | `deploy/charts/hub/templates/gateway.yaml` | the users' entry point does not exist |
-| FQDN network policy (`FQDNNetworkPolicy`) enabled | `crates/hub/HARDENING.md` ("The network") | the hub cannot reach Entra, GitHub or Google by name. `hub:network.fqdnPolicy` set to `false` reaches them by address instead, which is weaker and marked |
+| FQDN network policy (`FQDNNetworkPolicy`) enabled | `crates/hub/HARDENING.md` ("The network") | the hub cannot reach Entra, GitHub or Google by name. `hub:network.fqdnPolicy: false` reaches them by address instead, which is weaker and marked; it is for kind only, and `deploy/tests/render.sh policy` fails its warning for staging and prod |
 | a network plugin that enforces `NetworkPolicy` | `crates/hub/HARDENING.md`, `crates/agent/HARDENING.md` ("What this contract cannot prove") | the policies are ignored, so every limit in them is gone |
 | the persistent disk CSI driver `pd.csi.storage.gke.io` | `deploy/charts/hub/templates/storageclass.yaml` | the mirror volumes are never bound |
 | Config Connector (step 3) | `deploy/charts/gcp` | the Google Cloud objects are not made |
@@ -314,8 +314,8 @@ and 11 put Secrets in it before Argo CD would make it.
 - `namespace/lanekeeper created`.
 
 **If not.** Fewer than three zones: add node pools, or make the cluster regional. A missing GatewayClass or kind: the Gateway controller is
-not enabled (**Not verified**: how). No `fqdnnetworkpolic` line: FQDN network policy is not enabled. Do not go on without it, unless you
-accept `hub:network.fqdnPolicy: false` and the warning that goes with it.
+not enabled (**Not verified**: how). No `fqdnnetworkpolic` line: FQDN network policy is not enabled. Do not go on without it: `hub:network.fqdnPolicy: false` is for
+kind only, and the repository's check (`deploy/tests/render.sh policy`) fails the warning that goes with it for staging and prod.
 
 ## 3. Config Connector and its Google service account
 
@@ -817,18 +817,14 @@ Identity. Step 18 lists the difference between the README and the code.
 **Do.**
 
 10.1 Make a temporary identity for it. The role names and the binding commands are from the README of the gcp chart (it grants them to a person; here they
-go to a service account). Remove all of it in 10.6.
+go to a service account). It gets no role yet: the two roles go on **one** key at a time (10.2, 10.3) and come off before the next, so that no identity can sign
+with both CAs at once. An agent's certificate must never pass for a replica's (S5), and one account that held both keys, even for ten minutes, is the shape of that mistake.
+Remove all of it in 10.6.
 
-Source: `deploy/charts/gcp/README.md`, step 4 of "What a person still does" (the two roles on one key, with `add-iam-policy-binding`), and `deploy/ADDING-A-SWIMLANE.md`, step 2 (the Workload Identity binding of a Kubernetes account). **Not verified**: that these two roles are enough, and the service-account commands.
+Source: `deploy/ADDING-A-SWIMLANE.md`, step 2 (the Workload Identity binding of a Kubernetes account). **Not verified**: the service-account commands.
 
 ```bash
 gcloud iam service-accounts create <CA_INIT_GSA> --project <PROJECT_ID>
-for key in <AGENT_CA_KEY_NAME> <REPLICA_CA_KEY_NAME>; do
-  for role in roles/cloudkms.publicKeyViewer roles/cloudkms.signerVerifier; do
-    gcloud kms keys add-iam-policy-binding "$key" --keyring=<KEYRING> --location=<LOCATION> --project=<PROJECT_ID> \
-      --member=serviceAccount:<CA_INIT_GSA>@<PROJECT_ID>.iam.gserviceaccount.com --role="$role"
-  done
-done
 gcloud iam service-accounts add-iam-policy-binding <CA_INIT_GSA>@<PROJECT_ID>.iam.gserviceaccount.com \
   --project <PROJECT_ID> --role roles/iam.workloadIdentityUser \
   --member "serviceAccount:<PROJECT_ID>.svc.id.goog[lanekeeper/<CA_INIT_KSA>]"
@@ -838,15 +834,27 @@ kubectl -n lanekeeper annotate serviceaccount <CA_INIT_KSA> iam.gke.io/gcp-servi
 
 `<AGENT_CA_KEY_NAME>` and `<REPLICA_CA_KEY_NAME>` are `gcp:kms.keys.agentCa` and `gcp:kms.keys.replicaCa`. Both are defined in step 7.
 
-10.2 Run `hub ca-init` for the agent CA, as a one-off pod from the hub image. The image's entry point is the `hub` binary, so the arguments start with `ca-init`.
-The options are from the README: `--kms-ref` is the key **version**, `--common-name` is for people, and `--valid-days` is 1 to 3650 and is the date
+The pods of 10.2 and 10.3 are not the hub's, and the chart's hardening does not reach them, so each carries it in `--overrides`: non-root, a read-only root filesystem, no capabilities,
+the `RuntimeDefault` seccomp profile, and no Kubernetes token (Workload Identity asks the metadata server and does not use it). `ca-init` writes no file (`crates/hub/HARDENING.md`), so it needs no writable
+volume. **Not verified**: the `--overrides` JSON of `kubectl run` (that the container entry is merged into the generated one by its name, which `kubectl run` gives the pod's name), that the image's
+user 65532 exists, and that your cluster's policies let the pod run. If the pod does not start for one of those reasons, say so in a change to this guide; do not drop the hardening to make it start.
+
+10.2 Run `hub ca-init` for the agent CA: give the temporary account its two roles on the agent key, run the pod, take the roles off. The image's entry point is the `hub` binary,
+so the arguments start with `ca-init`. The options are from the README: `--kms-ref` is the key **version**, `--common-name` is for people, and `--valid-days` is 1 to 3650 and is the date
 you must renew the CA by.
 
-**Not verified.** The `--overrides` JSON of `kubectl run`, and that your cluster's policies let a pod without the chart's hardening run. This pod is not the hub's.
+Source: `deploy/charts/gcp/README.md`, step 4 of "What a person still does" (the two roles on one key, with `add-iam-policy-binding`). **Not verified**: that these two roles are enough, and the exact commands.
+
+```bash
+for role in roles/cloudkms.publicKeyViewer roles/cloudkms.signerVerifier; do
+  gcloud kms keys add-iam-policy-binding <AGENT_CA_KEY_NAME> --keyring=<KEYRING> --location=<LOCATION> --project=<PROJECT_ID> \
+    --member=serviceAccount:<CA_INIT_GSA>@<PROJECT_ID>.iam.gserviceaccount.com --role="$role"
+done
+```
 
 ```bash
 kubectl -n lanekeeper run ca-init-agent --restart=Never --image "<HUB_IMAGE>@<HUB_DIGEST>" \
-  --overrides '{"spec":{"serviceAccountName":"<CA_INIT_KSA>","imagePullSecrets":[{"name":"<PULL_SECRET>"}]}}' \
+  --overrides '{"spec":{"serviceAccountName":"<CA_INIT_KSA>","automountServiceAccountToken":false,"imagePullSecrets":[{"name":"<PULL_SECRET>"}],"securityContext":{"runAsNonRoot":true,"runAsUser":65532,"runAsGroup":65532,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"ca-init-agent","securityContext":{"allowPrivilegeEscalation":false,"privileged":false,"readOnlyRootFilesystem":true,"capabilities":{"drop":["ALL"]}}}]}}' \
   -- ca-init --kms-ref "<AGENT_CA_KEY_VERSION>" --common-name "Lanekeeper agent CA" --valid-days 3650
 kubectl -n lanekeeper wait --for=jsonpath='{.status.phase}'=Succeeded pod/ca-init-agent --timeout=180s
 kubectl -n lanekeeper logs pod/ca-init-agent | sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' > agent-ca.pem
@@ -855,15 +863,44 @@ kubectl -n lanekeeper delete pod ca-init-agent
 
 Leave out `imagePullSecrets` if the packages are public. The `sed` keeps only the certificate: the command prints its own messages on standard error, and the log merges the two.
 
-10.3 The same for the replica CA, with its own key version and name.
+Take the two roles off the agent key **before 10.3, whether the pod succeeded or not**. If it failed, fix the cause (see "If not") and begin 10.2 again.
+
+Source: `deploy/charts/gcp/README.md`, step 4 ("remove-iam-policy-binding"). **Not verified**: the exact commands.
+
+```bash
+for role in roles/cloudkms.publicKeyViewer roles/cloudkms.signerVerifier; do
+  gcloud kms keys remove-iam-policy-binding <AGENT_CA_KEY_NAME> --keyring=<KEYRING> --location=<LOCATION> --project=<PROJECT_ID> \
+    --member=serviceAccount:<CA_INIT_GSA>@<PROJECT_ID>.iam.gserviceaccount.com --role="$role"
+done
+```
+
+10.3 The same for the replica CA, with its own key, key version and name: its two roles on the replica key, the pod, and the roles off.
+
+Source and **Not verified**: as 10.2.
+
+```bash
+for role in roles/cloudkms.publicKeyViewer roles/cloudkms.signerVerifier; do
+  gcloud kms keys add-iam-policy-binding <REPLICA_CA_KEY_NAME> --keyring=<KEYRING> --location=<LOCATION> --project=<PROJECT_ID> \
+    --member=serviceAccount:<CA_INIT_GSA>@<PROJECT_ID>.iam.gserviceaccount.com --role="$role"
+done
+```
 
 ```bash
 kubectl -n lanekeeper run ca-init-replica --restart=Never --image "<HUB_IMAGE>@<HUB_DIGEST>" \
-  --overrides '{"spec":{"serviceAccountName":"<CA_INIT_KSA>","imagePullSecrets":[{"name":"<PULL_SECRET>"}]}}' \
+  --overrides '{"spec":{"serviceAccountName":"<CA_INIT_KSA>","automountServiceAccountToken":false,"imagePullSecrets":[{"name":"<PULL_SECRET>"}],"securityContext":{"runAsNonRoot":true,"runAsUser":65532,"runAsGroup":65532,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"ca-init-replica","securityContext":{"allowPrivilegeEscalation":false,"privileged":false,"readOnlyRootFilesystem":true,"capabilities":{"drop":["ALL"]}}}]}}' \
   -- ca-init --kms-ref "<REPLICA_CA_KEY_VERSION>" --common-name "Lanekeeper replica CA" --valid-days 3650
 kubectl -n lanekeeper wait --for=jsonpath='{.status.phase}'=Succeeded pod/ca-init-replica --timeout=180s
 kubectl -n lanekeeper logs pod/ca-init-replica | sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' > replica-ca.pem
 kubectl -n lanekeeper delete pod ca-init-replica
+```
+
+Source and **Not verified**: as 10.2.
+
+```bash
+for role in roles/cloudkms.publicKeyViewer roles/cloudkms.signerVerifier; do
+  gcloud kms keys remove-iam-policy-binding <REPLICA_CA_KEY_NAME> --keyring=<KEYRING> --location=<LOCATION> --project=<PROJECT_ID> \
+    --member=serviceAccount:<CA_INIT_GSA>@<PROJECT_ID>.iam.gserviceaccount.com --role="$role"
+done
 ```
 
 10.4 Check both files. The hub's own check at start is stricter, but you find a mistake here and not at the first rollout.
@@ -884,7 +921,8 @@ gcloud secrets versions add lanekeeper-agent-ca-cert --data-file=agent-ca.pem --
 gcloud secrets versions add lanekeeper-replica-ca-cert --data-file=replica-ca.pem --project=<PROJECT_ID>
 ```
 
-10.6 Remove the temporary identity.
+10.6 Remove the temporary identity. **Run this even if 10.2 or 10.3 failed or you stopped half way**: a run that stopped leaves the two roles on the key it had reached, and the account
+and its Workload Identity binding exist until you remove them. A command that names a binding which is already gone may report an error (**Not verified**); go on to the next.
 
 Source: `deploy/charts/gcp/README.md`, step 4 ("remove-iam-policy-binding"). **Not verified**: the other commands.
 
@@ -898,6 +936,8 @@ for key in <AGENT_CA_KEY_NAME> <REPLICA_CA_KEY_NAME>; do
 done
 gcloud iam service-accounts delete <CA_INIT_GSA>@<PROJECT_ID>.iam.gserviceaccount.com --project <PROJECT_ID>
 ```
+
+Then check that no role is left on either key (**Not verified**: the command): `gcloud kms keys get-iam-policy <AGENT_CA_KEY_NAME> --keyring=<KEYRING> --location=<LOCATION> --project=<PROJECT_ID>`, and the same for `<REPLICA_CA_KEY_NAME>`, must not list `<CA_INIT_GSA>`.
 
 **You should see.**
 
@@ -1087,7 +1127,7 @@ kubectl -n lanekeeper get pvc
 kubectl -n lanekeeper logs job/<SEED_JOB>
 ```
 
-- The migration Job `lanekeeper-hub-migrate` runs **before** the hub rolls (an Argo CD PreSync hook). Its log has one JSON line for each migration it applied, then
+- The migration Job `lanekeeper-hub-migrate` runs **before** the hub rolls (an Argo CD PreSync hook; **Not verified**: Argo CD's documentation was not reachable, and the hook mapping was written from its source). Its log has one JSON line for each migration it applied, then
   `"the schema is up to date"` with `"applied":8,"version":8` (`crates/hub/README.md`, "Migrating the database"; the migrations are `db/migrations/0001_init.sql` to
   `0008_blob_touch.sql`).
 - The StatefulSet `lanekeeper-hub` starts three pods. Each fills its Git mirror volume from GitHub first, and is not ready until both repositories are fetched. That depends on the network, not on P11.
@@ -1170,10 +1210,14 @@ The first command runs from an address in `<USERS_RANGES>`. The second too: the 
 | Events | `push`, and `pull_request`. Every other event is acknowledged and ignored. `ping` answers 200 |
 | SSL verification | on |
 
-Source: `crates/hub-platform/src/git/webhook.rs` for what the hub does with each event. **Not verified**: the `gcloud` flags.
+Do not print the secret to the terminal: the scrollback and the shell's history keep it. Read it into a file only you can read, paste it from there into GitHub's field, and remove the file.
+
+Source: `crates/hub-platform/src/git/webhook.rs` for what the hub does with each event. **Not verified**: the `gcloud` flags, and that `shred` removes the file on your file system (it may not on a journaled one or on an SSD).
 
 ```bash
-gcloud secrets versions access latest --secret=github-webhook-secret --project=<PROJECT_ID>
+(umask 077; gcloud secrets versions access latest --secret=github-webhook-secret --project=<PROJECT_ID> > webhook-secret.txt)
+# open webhook-secret.txt in an editor that keeps no copy, copy the one line into GitHub's Secret field, close it, then:
+shred -u webhook-secret.txt
 ```
 
 Without a webhook, the hub polls every 60 seconds (Q28).
@@ -1354,7 +1398,7 @@ Compute Engine service agent of the swimlane's project has no use of the disk ke
 | 11 | a write previews | in the app, preview a change to a file; the API is `POST /api/v1/swimlanes/{id}/files/preview` | an answer that says what the change would do, and nothing is written. Editing stays locked until an administrator confirms the baseline (the runbook, step 6) |
 | 12 | the webhook is accepted | a push to a mirrored repository | GitHub shows `202` for the delivery |
 | 13 | Cloud Armor denies | the `curl` of 13.3 from an address in neither list | `403` |
-| 14 | the first measurement of start to ready (P11) | `kubectl -n lanekeeper get pod lanekeeper-hub-0 -o jsonpath='{.status.startTime}{"\n"}{.status.conditions[?(@.type=="Ready")].lastTransitionTime}{"\n"}'` | the time between the two. P11 budgets 10 seconds for the start itself, without the first Git fetch (`crates/hub/README.md`, item 11). Record the number: no CI run has ever produced one |
+| 14 | the first measurement of start to ready (P11) | `kubectl -n lanekeeper get pod lanekeeper-hub-0 -o jsonpath='{.status.startTime}{"\n"}{.status.conditions[?(@.type=="Ready")].lastTransitionTime}{"\n"}'` | the time between the two. **This is not P11.** The pod's `startTime` is before the image is pulled, and `Ready` comes only after the first fetch of both Git repositories (the `mirrors` check gates `/readyz`), and P11 budgets 10 seconds for the hub's own start without either (`crates/hub/README.md`, item 11). The number is an upper bound on a first start, and says nothing about whether P11 is met; record it as that. The hub's own start is in its log, from the line `starting` to the line `listening` (**Not verified**: that the interval is what P11 measures) |
 
 **You should see.** Every row as expected.
 
@@ -1384,7 +1428,7 @@ hub keeps working on the new schema while it rolls (`crates/hub/README.md`). A n
 - The audit checkpoint key: the older versions must still verify old checkpoints (`LK_AUDIT_CHECKPOINT_VERIFY_KMS_REFS`), and **the chart cannot set that variable** (step 18). Do not roll this key before that is fixed.
 - The vault key: `gcp:kms.vaultRotationPeriod` gives it a new primary version every 90 days. The hub names no version, so nothing changes in the values.
 
-17.5 **A failed migration Job.** The sync stops at PreSync and the hub does not roll. The Application shows a failed operation; the Job is kept so that you can read it.
+17.5 **A failed migration Job.** The sync stops at PreSync and the hub does not roll. The Application shows a failed operation; the Job is kept so that you can read it. (**Not verified**: all of this is how Argo CD is expected to treat a failed PreSync hook; the first failed sync is the test.)
 
 ```bash
 kubectl -n lanekeeper get jobs
@@ -1413,11 +1457,12 @@ that removing them from Git deletes nothing (`deploy/argocd/README.md`, "Prune")
 
 - **The production hub image has never been Ready.** It cannot be without real Google services and Entra, so kind cannot show it (`plans/09-deployment-ci.chart-alignment.md`, section 10). `/readyz` on three replicas and the
   startup time P11 were never measured in CI. The first real measurement is step 12.7 and step 16 of this guide. The kind job proves what it can: the Jobs, the database and S6, and that each replica stops at its first Google call.
-- The `hub` stage of the kind job has never run: no Docker daemon was available where it was written (`plans/09-deployment-ci.chart-alignment.md`, the status of 2026-10-28). Only its script's tests ran.
+- The `hub` stage of the kind job ran once in GitHub CI as far as is known here (the job "kind, the hub chart with CloudNativePG", run 40665155670 on `62d23dc`, read from the GitHub page, not by a command): it passed with the migration and seed Jobs
+  completed and all three replicas stopped at their first Google step (exit 1), and `/readyz` on three replicas and P11 reported **NOT MEASURED**. Nothing here ran it again; the run for a later commit is the one to look at.
 - Nothing has run on a real GKE cluster. Every Google-specific shape is taken from vendored schemas and from memory, because Google's documentation was refused (`plans/09-deployment-ci.blockers.md`, B6). The charts' READMEs list
   them: the Gateway's `networking.gke.io/pre-shared-certs` option and `NamedAddress`; the `cloud.google.com/l4-rbs` annotation; that `externalTrafficPolicy: Local` keeps clients' addresses; that Google's proxies and health checks come from
   `35.191.0.0/16` and `130.211.0.0/22`; that FQDN network policy and enforcement are enabled; the schemas of `GCPBackendPolicy`, `HealthCheckPolicy` and `FQDNNetworkPolicy`, which come from a community catalog.
-- Argo CD's handling of the migration Job as a PreSync hook, and of the hook's account and policy, was written from its source and not read from its documentation. The first sync is the test.
+- Argo CD's handling of the migration Job as a PreSync hook, of the hook's account and policy, and of the seed Job's `Prune=false` was written from its source and not read from its documentation (**Not verified**). The first sync is the test.
 - Config Connector: that it makes a first version of each key, that it is version 1, that it accepts HSM keys in your location, that a regional key works for a one-replica secret, and what it does when it finds a ring or a key already there
   (`deploy/charts/gcp/README.md`, "Not verified").
 - The seed with only a project, `hub seed --dry-run` in a cluster, a restore from the database backup, and the sentinel's daemon.
@@ -1441,8 +1486,9 @@ that removing them from Git deletes nothing (`deploy/argocd/README.md`, "Prune")
   A checkpoint key roll needs `LK_AUDIT_CHECKPOINT_VERIFY_KMS_REFS` first.
 - **The agent chart does not set `LK_CONFIG_SERVER_DEPLOYMENT`**, so the agent does not report when the config-server's pods started and check C11 is not reported. Adding it is a contract decision (the agent would watch the config-server's namespace).
 - The migration and seed Jobs' resources are a guess (`jobs.resources`). There is no dry-run Job for the seed. The web certificate's issuer, names and renewal are not defined by the repository, and nothing rotates it.
-- `crates/hub/HARDENING.md` says `/healthz` does not depend on the database. In the code it answers only after the database, the schema, the web certificate and both CAs have loaded. It also writes `LK_REPLICA_ADDRESS` with the Service name `lanekeeper-hub`, where the chart's is
-  `lanekeeper-hub-replicas`. The chart is right on both (`plans/09-deployment-ci.chart-alignment.md`, gaps B1 and P1).
+- **`/healthz` answers only when the whole start has finished** (`crates/hub/src/process.rs`: the operations socket is bound first and served last), and the start is six steps in a row that are each bounded by `LK_START_TIMEOUT_SECS`
+  (8). The startup probe gives the pod 60 s, so the chart refuses a `LK_START_TIMEOUT_SECS` above 8; a larger one needs a wider probe window, which is a change of the contract in `crates/hub/HARDENING.md`, a human's decision.
+  The caches are held to the memory limit in the same way (`deploy/charts/hub/README.md`). **Not verified:** that the P11 memory figure was measured with the default caches.
 - **`hub ca-init` and the identity** (step 10): the README says a person runs it; the hub can authenticate only through a metadata server, so it cannot run on a laptop. This guide uses a pod with a temporary service account. The repository does not document that route.
   Whether `roles/cloudkms.signerVerifier` covers reading the public key is not verified.
 
