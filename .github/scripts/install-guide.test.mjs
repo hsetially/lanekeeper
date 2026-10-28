@@ -35,6 +35,8 @@
 //                 the list, and a command that is written in prose or in an inline span and not in a fenced block
 //   secret-file   the file such a command writes is "$dir/..." where dir is the variable that holds the output of `mktemp -d` in the same
 //                 block (not $PWD, $(pwd), ~, /tmp, a relative name, or a path with ..), the block has umask 077, and it removes the directory
+//   seed-failed   step 17 tells what to do when the seed Job failed ("If the seed Job failed.": the Job keeps its name, make a new ConfigMap, set
+//                 seed.revision to the next number, never reuse the failed one), and step 12 points to it
 //   fqdn          `network.fqdnPolicy: false` is offered nowhere but as "for kind only"; it is never in a command or a values block
 //   links         deploy/argocd/README.md and deploy/ADDING-A-SWIMLANE.md point to the guide
 //   triggers      deploy.yml and ci.yml run when the guide changes, and deploy-check runs this test
@@ -539,6 +541,33 @@ function check(text, repo) {
     if (/fqdnPolicy\s*[:=]\s*false/.test(block)) fail('fqdn', `line ${b.start + 1}: a command or values block sets fqdnPolicy to false, which the policies refuse for staging and prod`);
   }
 
+  // seed-failed: a Job that failed at revision N is not made again by a sync, and the way out is a new ConfigMap and revision N+1
+  {
+    const seventeen = secs.find((sec) => sec.number === 17);
+    const twelve = secs.find((sec) => sec.number === 12);
+    const marker = '**If the seed Job failed.**';
+    const at = seventeen ? seventeen.body.indexOf(marker) : -1;
+    if (at < 0) {
+      fail('seed-failed', `step 17 has no "${marker}" paragraph: a seed Job that failed keeps its name and is not made again by a sync, and the guide must say what to do`);
+    } else {
+      const rest = seventeen.body.slice(at);
+      const next = rest.search(/\n\n(?!\d\. |\*\*Never reuse N|```)(?:\*\*|17\.\d)/);
+      const text = next < 0 ? rest : rest.slice(0, next + 1);
+      for (const [phrase, why] of [
+        ['keeps its name', 'a failed Job is not made again, so a sync does not retry it'],
+        ['new** ConfigMap', 'the recovery is a new ConfigMap'],
+        ['seed.revision', 'set to the next revision'],
+        ['N+1', 'the revision after the failed one'],
+        ['Never reuse N', 'the failed revision is never used again'],
+      ]) {
+        if (!text.includes(phrase)) fail('seed-failed', `the paragraph "If the seed Job failed" does not say "${phrase}" (${why})`);
+      }
+    }
+    if (twelve && !twelve.body.includes('If the seed Job failed')) {
+      fail('seed-failed', 'step 12 does not point to "If the seed Job failed" (17.3), where the seed Job is checked');
+    }
+  }
+
   // gaps
   const gaps = secs[secs.length - 1];
   if (gaps) {
@@ -664,6 +693,10 @@ const MUTANTS = [
   ['secret-file', 'the webhook secret written into /tmp, which is not the directory that mktemp -d made', (t) => replaceFirst(t, /> "\$dir\/webhook-secret\.txt"\)/, () => '> /tmp/webhook-secret.txt)')],
   ['secret-file', 'the webhook secret written into the home directory', (t) => replaceFirst(t, /> "\$dir\/webhook-secret\.txt"\)/, () => '> ~/webhook-secret.txt)')],
   ['secret-file', 'the webhook secret written above the private directory', (t) => replaceFirst(t, /> "\$dir\/webhook-secret\.txt"\)/, () => '> "$dir/../webhook-secret.txt")')],
+  ['seed-failed', 'the recovery of a failed seed Job removed', (t) => replaceFirst(t, /\*\*If the seed Job failed\.\*\*/, () => '**Other.**')],
+  ['seed-failed', 'the recovery that allows the failed revision again', (t) => replaceFirst(t, /\*\*Never reuse N\*\*/, () => '**Reuse N if you like**')],
+  ['seed-failed', 'the recovery that does not move the revision', (t) => t.replaceAll('N+1', 'N')],
+  ['seed-failed', 'step 12 that does not point to the recovery', (t) => replaceFirst(t, /A seed Job that did not complete: it is not re-created by a sync, and the recovery is a new ConfigMap and the next revision \(17\.3, "If the seed Job failed"\); never the same revision again\. /, () => '')],
   ['fqdn', 'fqdnPolicy false set in a values block', (t) => `${t}\n\`\`\`yaml\nnetwork:\n  fqdnPolicy: false\n\`\`\`\n`],
   ['fqdn', 'fqdnPolicy false in a values block that says it is for kind only', (t) => `${t}\nA value for kind only:\n\`\`\`yaml\nnetwork:\n  fqdnPolicy: false\n\`\`\`\n`],
   ['fqdn', 'fqdnPolicy false offered for any cluster', (t) => replaceFirst(t, /is for\nkind only/, () => 'is for\nclusters without the feature')],

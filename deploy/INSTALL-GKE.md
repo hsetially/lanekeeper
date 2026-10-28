@@ -1158,7 +1158,7 @@ Repeat for `lanekeeper-hub-1` and `lanekeeper-hub-2`.
 - `HTTP/1.1 200 OK` and the body `ready` from each. A ready body may also say `ready (not available: docs_search)`: that is expected until prompt 14 lands, and it never gates.
 - Time: note how long each pod took from start to ready (step 16).
 
-**If not.** During a start that is failing, the startup probe fails too, because `/healthz` only answers once the hub has finished starting. That is the hub's behaviour (the hub README's "Probes"
+**If not.** A seed Job that did not complete: it is not re-created by a sync, and the recovery is a new ConfigMap and the next revision (17.3, "If the seed Job failed"); never the same revision again. During a start that is failing, the startup probe fails too, because `/healthz` only answers once the hub has finished starting. That is the hub's behaviour (the hub README's "Probes"
 paragraph says otherwise; step 18). Read the log, not the events: `kubectl -n lanekeeper logs lanekeeper-hub-0 --previous`. The hub exits **2** when a setting is missing or malformed
 (the message names the variable and never its value) and **1** when a component cannot be reached or does not match (it names the component). A `503` from `/readyz` names the first check that
 fails:
@@ -1437,6 +1437,15 @@ kubectl -n lanekeeper create configmap lanekeeper-hub-seed-<ENV>-<SEED_REVISION>
 
 **Never use a revision twice, a revert included; always move forward.** The Job's name is a hash of the revision and the old Job is kept, so a revision that you use again names a Job that has already run (if the image is also the same as then, which it is for a revert soon after the change; after an image change the name differs, and a revert would run, which is luck and not a rule). Argo CD finds it complete and the Application `Synced`, and `hub seed` does not run:
 the hub keeps the rows of the later file while Git shows the earlier one, and those rows decide who may join as a swimlane's agent. To revert a seed change, make a new ConfigMap from the earlier file with the next revision number. The chart cannot see the revisions that came before, so it cannot refuse one you used; the review of the pull request that changes `seed.revision` is the check.
+
+**If the seed Job failed.** `kubectl -n lanekeeper get jobs` shows a `lanekeeper-hub-seed-` Job that did not complete (`COMPLETIONS 0/1`, and a `Failed` condition once its tries or its deadline are used up), and `kubectl -n lanekeeper logs job/<SEED_JOB>` says why; a row that the hub refuses is the usual cause, so the file is the first thing to read. A failed Job at revision N **keeps its name**: the name is a hash of the pod template, the revision, the file and the number of tries, none of which a sync changes, so the Job is already there, `Prune=false` keeps it, and a sync does not make it again. Syncing again changes nothing that runs, and editing the ConfigMap of revision N does not run it either and destroys the record of what was tried. (A new image changes the name, as in 17.2, and would run the same file again at the same revision: a way to retry that the recovery below does not rely on.) The recovery is the same as for any seed change, with the next number:
+
+1. Fix the file (`<SEED_FILE>`). If the log shows that the file was not the cause (the database was not reachable, the deadline ran out), keep the file; the steps are the same.
+2. Make a **new** ConfigMap from it, named with the revision after the failed one (`<SEED_REVISION>` is N+1), with `create` as in the command above. Leave the ConfigMap of revision N where it is: the failed Job points at it.
+3. In `deploy/values/hub/<ENV>.yaml` set `seed.existingConfigMap` to the new name and `seed.revision` to N+1, merge, and move the revision as in 17.2.
+4. Check that a new `lanekeeper-hub-seed-` Job ran and completed, and read its report.
+
+**Never reuse N**: the same revision, image and file give the name of the Job that failed, which is still there, and nothing runs. The failed Job and its ConfigMap stay until you remove them, in the order of the next paragraph. **Not verified**: how Argo CD shows an Application whose seed Job failed (a failed Job is not healthy, so it may show `Degraded`; the seed is not a hook, so it does not stop a deploy), and that a sync leaves a failed Job alone, which is read from the chart's design and from how Jobs work and has not been seen.
 
 Delete a Job you no longer need with `kubectl -n lanekeeper delete job <name>`, and only afterwards the ConfigMap that it named: the record is the pair. **Not verified:** how Argo CD treats the annotation; it may show the Application as `OutOfSync` while an old Job exists. Run the dry run first if you can (step 18).
 
