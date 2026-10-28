@@ -659,3 +659,31 @@ with staging and prod values only (B5). `render.sh planted`: exit 1 for the one 
 
 HSM in prod is `kms.rego`'s reading of S5 and is in no decision (`docs/decisions.md` was not touched); a start timeout above 8 needs a wider startup window (a contract change); the 768 MiB cache default and the six start steps are read from the hub and not measured;
 Argo CD's hooks and `Prune=false`, and Config Connector with HSM keys, are never observed; `hub-fuzz` on the new head; and the items in "Needs a human before merge" in `plans/09-deployment-ci.pr.md`.
+
+## Status (written after review round 2: the FIX step after the second independent review, which re-checked round 1 at `de30902`)
+
+The verdict was CHANGES REQUESTED: two blocking findings (B-1, B-2) and six non-blocking (NB-1 to NB-6); the orchestrator declined two more (NB 7, per-resource sync options other than `Prune=false`; NB 8, unbounded old seed Jobs, which is by design and is residual 33). All of round 1 was confirmed fixed except these.
+Each finding was checked against the code first; all eight were real and none was rejected. B-2 and NB-1 were reproduced before the fix, and every new rule, guard and check was written first and seen red.
+
+### Closed
+
+| Finding | Commit | How it is shown |
+|---|---|---|
+| B-1 "the seed record is kept" was false for staging and prod (`seed.existingConfigMap` is a ConfigMap a person makes; the chart renders none) | `7b0a0ab`, `b16492d`, `4f20dab` | the chart refuses an `existingConfigMap` that does not end with `-<revision>` (4 planted cases, red first), `prod.yaml` and `staging.yaml` follow; the runbook is one new ConfigMap per change, named with the revision, made with `create`, never edited or deleted in place; the five statements are qualified (chart README, Argo CD README, `HARDENING.md`, guide 12.3, 12.5, 15.1, 17.3, 17.7, known gaps, swimlane runbook, values comments); the asset, the R row and residuals 33, 34 and 37 of the threat model |
+| B-2 `Prune=false` made a revert a silent no-op | `7b0a0ab`, `b16492d`, `4f20dab`, `e69212e` | reproduced on prod values (revisions 1, 2, 1: the Job names of 1 and 3 are equal; a new image changes the name); `seed.revision` is a positive integer (6 planted cases, red first); "never reuse a revision, a revert included" in the guide, the chart README, `values.yaml`, `HARDENING.md` and the values files; residual 38. The chart cannot refuse a reused revision (a template cannot see earlier ones) and the README says so |
+| NB-1 a quoted leading-zero string walked round the cache guard | `d075c09` | every number of `config.tuning` is a number in the hub's range and never a string (13 numbers x 3 cases, 2 rates x 3, and 6 for the caches, red first); no committed values file sets a tunable |
+| NB-2 two rows overstated what the policies cover | `4f20dab` | the migrator-Secret row says its rule reads the rendered output only; the seed row says the policy reads only the ConfigMap the chart makes |
+| NB-3 the values of a secret container's metadata were not held | `6821663` | `kms.rego`: standard labels fixed, chart label `lanekeeper-gcp-<semver>`, the project is a project id and the key ring's, the namespace is the key ring's, metadata fields `name`, `namespace`, `labels`, `annotations` only; 15 Rego tests (13 red first), 7 planted cases on the real render, each rule removed in turn fails 1 to 4 tests |
+| NB-4 nothing held the guide's round-1 fixes; four gaps in the guide | `cfde244` | `install-guide.test.mjs`: `ca-binding`, `secret-print`, `secret-file`, `fqdn`, 11 mutants, each rule neutralised in turn fails its mutants; the guide: `mktemp -d` for the webhook secret, the pods' open egress said (Not verified what a policy should allow), failed pods deleted before a retry and in 10.6 |
+| NB-5 the disk check did not see the fuzz jobs | `0064fea` | a job that runs a recipe of its matrix is heavy; six in-memory mutants of the workflows; red with the old pattern (7), green with the new |
+| NB-6 `HARDENING.md` nits | `8c78389` | all four sockets are bound first and the operations socket is served last; `/readyz` has seven checks; comments of `_helpers.tpl`, `statefulset.yaml`, `resources.rego` and the guide; the two hub tests pass |
+
+### Checks at this HEAD (the render, policy, planted and `ci-lint` runs are on the tree at `8c78389`; `conftest verify`, the script tests and the two hub tests were run again on the final tree; the commits after `8c78389` change prose, the threat model's "what was run" table and `plans/` only: `e69212e`, `1a2dc23`, `023c779`)
+
+`conftest verify --policy deploy/policy`: 1364 of 1364 (1349 before). `node --test .github/scripts/*.test.mjs`: 223 of 223 (205 before; `install-guide.test.mjs` 42, `consistency.test.mjs` 17). `render.sh lint`, `contract`, `data`, `argocd`: exit 0.
+`render.sh render` and `policy`: exit 1 for the gcp chart with staging and prod values only (B5). `render.sh planted`: exit 1 for the one counted Cloud Armor group (B5), 847 cases ok (779 before), no `PLANTED FAILED` line. `just ci-lint`: exit 0. `node deploy/schemas/verify.mjs`: exit 0.
+`cargo test -p hub --test hardening`: 7 of 7. `cargo test -p hub --test justfile_gate`: 8 of 8. (`render.sh hub`, the hub chart alone, was also run on the tree with the first two commits: exit 0, 376 cases ok against 315 at `de30902`.)
+
+### Left for a person
+
+Residuals 37 and 38 are new and a person's: keep every seed ConfigMap (and decide whether to make them `immutable: true` by a manifest), review each change of `seed.revision` for a reused number, and look at the new seed Job after each sync. The `ca-init` pods' network is not limited and no policy for them is given (what it should allow is not verified). The ranges in the hub chart's schema are copied from the hub's code and nothing compares them. The items of round 1 still stand: HSM in prod is `kms.rego`'s reading of S5 and is in no decision; a start timeout above 8 needs a wider startup window (a contract change); the 768 MiB cache default and the six start steps are read from the hub and not measured; Argo CD's hooks and `Prune=false`, and Config Connector with HSM keys, are never observed; `hub-fuzz` on the new head has not run; and the items in "Needs a human before merge" in `plans/09-deployment-ci.pr.md`.
