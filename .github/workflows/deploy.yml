@@ -22,6 +22,11 @@ on:
       - "deploy/tools/**"
       - "deploy/images/tools.env"
       - "crates/hub/HARDENING.md"
+      # The install guide names these, and its test (install-guide-test, part of deploy-check) reads them.
+      - "deploy/INSTALL-GKE.md"
+      - "deploy/ADDING-A-SWIMLANE.md"
+      - "crates/hub/README.md"
+      - ".github/scripts/install-guide.test.mjs"
       # The hub chart is checked against these (env-names.sh reads the settings; render.sh contract reads the variables the hub requires).
       - "crates/hub/src/config.rs"
       - "crates/hub/src/config/**"

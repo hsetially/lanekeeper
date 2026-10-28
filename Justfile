@@ -1076,9 +1076,16 @@ env-names-test:
 tools-test:
     node --test deploy/tools/*.test.mjs
 
+# The install guide (deploy/INSTALL-GKE.md) says what the repository says: every path, `just` recipe, setting, secret and chart value it
+# names exists, its steps are numbered, its gcloud blocks say they are not verified, and nothing in it looks like a real secret, project or
+# host. The checker is shown to catch each kind of drift. No Docker and no network.
+# The install guide names only what exists and holds nothing real.
+install-guide-test:
+    node --test .github/scripts/install-guide.test.mjs
+
 # Everything that checks the charts and the Argo CD files (what the deploy workflow runs): schemas, lint, kubeconform, the policies and
-# their planted cases.
-deploy-check: schemas-verify deploy-lint deploy-render policy-test policy-check contract-check deploy-planted env-names-test tools-test
+# their planted cases, and the install guide that names them.
+deploy-check: schemas-verify deploy-lint deploy-render policy-test policy-check contract-check deploy-planted env-names-test tools-test install-guide-test
 
 # The data layer of 09/T5 alone: the db chart, and the gcp chart's buckets, keys, IAM and admission policy (09/T6) rendered without
 # Cloud Armor, through lint, kubeconform -strict, the policies, their planted violations and the check that the db, gcp and hub charts name

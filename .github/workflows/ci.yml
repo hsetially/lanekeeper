@@ -11,6 +11,17 @@ on:
       - "deploy/**/*.sh"
       - "renovate.json"
       - "Justfile"
+      # pins-test runs every .github/scripts/*.test.mjs, among them the install guide's. It reads these files, so a change to one must
+      # run it (a file that the guide names and nobody here lists is caught on the next push to main).
+      - "deploy/INSTALL-GKE.md"
+      - "deploy/charts/hub/values.yaml"
+      - "deploy/charts/hub/values.schema.json"
+      - "deploy/charts/gcp/values.yaml"
+      - "deploy/charts/gcp/templates/_helpers.tpl"
+      - "deploy/tests/kind/pins.env"
+      - "crates/hub/HARDENING.md"
+      - "crates/hub/README.md"
+      - "crates/agent/HARDENING.md"
   push:
     branches: [main]
 permissions: {}
