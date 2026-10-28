@@ -1183,6 +1183,9 @@ planted_gcp_storage() {
     plant "a key ring deleted with its resource" gcp-storage prod "$in_ring"'s#deletion-policy: abandon#deletion-policy: delete#' "deletion-policy: abandon"
     plant "a key ring that a sync may prune" gcp-storage prod "$in_ring"'s#Prune=false#Prune=true#' "Prune=false"
     plant "a key ring without a location" gcp-storage prod "$in_ring"'{/^  location: /d}' "names no location"
+    # 09/fix, round 3 (NB-5): the compared values come from one ring.
+    plant_cmd "no key ring" gcp-storage prod "exactly one KMSKeyRing" drop_doc KMSKeyRing lanekeeper
+    plant_append "a second key ring" gcp-storage prod $'apiVersion: kms.cnrm.cloud.google.com/v1beta1\nkind: KMSKeyRing\nmetadata:\n  name: another\n  namespace: lanekeeper-gcp\nspec:\n  location: example-location' "exactly one KMSKeyRing"
     plant "secrets deleted with their resource" gcp-storage prod "$in_secret"'s#deletion-policy: abandon#deletion-policy: delete#' "deletion-policy: abandon"
     plant "secrets that a sync may prune" gcp-storage prod "$in_secret"'s#Prune=false#Prune=true#' "Prune=false"
     plant "a secret that holds a value" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/s#^spec:$#spec:\n  secretData: {value: hunter2}#}' "replication and nothing else"
@@ -1198,6 +1201,7 @@ planted_gcp_storage() {
     # 09/fix, round 2 (NB-3): a key the chart writes can hold a value as well as one it does not; the values are held too.
     plant "a secret whose instance label holds a value" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/s#(app.kubernetes.io/instance:) .*#\1 hunter2#}' 'app.kubernetes.io/instance is "hunter2"'
     plant "a secret whose chart label holds a value" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/s#(helm.sh/chart:) .*#\1 "lanekeeper-gcp-0.1.0-hunter2"#}' "helm.sh/chart is"
+    plant "a secret whose chart label has a number of any length" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/s#(helm.sh/chart:) .*#\1 "lanekeeper-gcp-0.1.99999999999999999"#}' "helm.sh/chart is"
     plant "a secret whose project annotation holds a value" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/s#(cnrm.cloud.google.com/project-id:) .*#\1 "hunter2"#}' "the key ring is in the project"
     # 09/fix, round 3 (NB-2): a value that is not text. The project annotation is also refused for its project, so the message is what is held.
     plant "a secret whose chart label is a number" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/s#(helm.sh/chart:) .*#\1 20261028#}' "helm.sh/chart is not text"

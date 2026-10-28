@@ -280,6 +280,40 @@ test_deny_a_secret_whose_chart_label_has_a_suffix_that_holds_a_value if {
 	refused(fixtures.gs_secret_add(secret_name, "/metadata/labels/helm.sh~1chart", "lanekeeper-gcp-0.1.0-hunter2"), "helm.sh/chart is")
 }
 
+# 09/fix, round 3 of the review (NB-5): the digits of a version are as many as a version has (a number of any length is a free string), and a
+# chart whose Chart.yaml version is a semver prerelease (0.2.0-rc.1) is the chart and not a value: one of alpha, beta or rc, a dot and a
+# number of at most four digits.
+test_deny_a_secret_whose_chart_label_has_a_number_of_any_length if {
+	refused(fixtures.gs_secret_add(secret_name, "/metadata/labels/helm.sh~1chart", "lanekeeper-gcp-0.1.99999999999999999"), "helm.sh/chart is")
+}
+
+test_deny_a_secret_whose_chart_label_has_a_prerelease_with_a_number_of_any_length if {
+	refused(fixtures.gs_secret_add(secret_name, "/metadata/labels/helm.sh~1chart", "lanekeeper-gcp-0.2.0-rc.99999"), "helm.sh/chart is")
+}
+
+test_deny_a_secret_whose_chart_label_has_a_prerelease_that_holds_a_word if {
+	refused(fixtures.gs_secret_add(secret_name, "/metadata/labels/helm.sh~1chart", "lanekeeper-gcp-0.2.0-rc.hunter2"), "helm.sh/chart is")
+	refused(fixtures.gs_secret_add(secret_name, "/metadata/labels/helm.sh~1chart", "lanekeeper-gcp-0.2.0-hunter2.1"), "helm.sh/chart is")
+	refused(fixtures.gs_secret_add(secret_name, "/metadata/labels/helm.sh~1chart", "lanekeeper-gcp-0.2.0-rc.1.hunter2"), "helm.sh/chart is")
+}
+
+test_a_secret_whose_chart_label_is_a_prerelease_or_a_long_version_passes if {
+	every label in ["lanekeeper-gcp-0.2.0-rc.1", "lanekeeper-gcp-0.2.0-alpha.12", "lanekeeper-gcp-1.0.0-beta.1234", "lanekeeper-gcp-1234.5678.9012"] {
+		planted := fixtures.gs_secret_add(secret_name, "/metadata/labels/helm.sh~1chart", label)
+		count(deny) == 0 with input as planted
+	}
+}
+
+# One key ring: the secrets' project, namespace and location are the key ring's, and a second ring would be a second answer.
+test_deny_a_second_key_ring if {
+	second := json.patch(fixtures.gs_keyring, [{"op": "replace", "path": "/metadata/name", "value": "another"}])
+	refused(fixtures.gs_with_doc(second), "exactly one KMSKeyRing")
+}
+
+test_deny_a_secret_and_no_key_ring if {
+	refused(fixtures.gs_without("KMSKeyRing"), "exactly one KMSKeyRing")
+}
+
 test_deny_a_secret_whose_project_annotation_holds_a_value if {
 	refused(fixtures.gs_secret_set(secret_name, "/metadata/annotations/cnrm.cloud.google.com~1project-id", "Hunter 2"), "is not a Google project id")
 }

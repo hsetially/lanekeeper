@@ -80,6 +80,14 @@ deny contains msg if {
 
 ring_names := {r.metadata.name | some r in rings}
 
+# One ring, and it is in the output. The chart makes one; the project, the namespace and the location of the secrets are compared with it (below),
+# and with two rings that differ in one of them every secret would be refused against the other, which says nothing about the secret.
+deny contains msg if {
+	count(rings) + count(keys) + count(secrets) > 0
+	count(rings) != 1
+	msg := sprintf("there must be exactly one KMSKeyRing in the output, and there are %d; the project, the namespace and the location of the secrets are compared with the key ring's (S5, S7)", [count(rings)])
+}
+
 # --- the keys: one for each thing they are for ----------------------------------------------------------------------------------------
 
 deny contains msg if {
@@ -253,7 +261,7 @@ fixed_secret_labels := {
 	"app.kubernetes.io/managed-by": "Helm",
 }
 
-chart_label_pattern := `^lanekeeper-gcp-[0-9]+\.[0-9]+\.[0-9]+$`
+chart_label_pattern := `^lanekeeper-gcp-[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(-(alpha|beta|rc)\.[0-9]{1,4})?$`
 
 project_id_pattern := `^[a-z][a-z0-9-]{4,28}[a-z0-9]$`
 
@@ -281,7 +289,7 @@ deny contains msg if {
 	got := s.metadata.labels["helm.sh/chart"]
 	is_string(got)
 	not regex.match(chart_label_pattern, got)
-	msg := sprintf("%s: the label helm.sh/chart is %q; the chart writes lanekeeper-gcp- and its version, three numbers, and nothing after it (S7)", [lk.who(s), got])
+	msg := sprintf("%s: the label helm.sh/chart is %q; the chart writes lanekeeper-gcp- and its version: three numbers of at most four digits, and at most a prerelease (alpha, beta or rc, a dot and one number of at most four digits), nothing else (S7)", [lk.who(s), got])
 }
 
 deny contains msg if {
