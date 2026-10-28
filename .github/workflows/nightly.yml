@@ -40,6 +40,13 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      # hub-fuzz builds the whole hub (the largest dependency graph of the matrix) next to the nightly toolchain and cargo-fuzz, on the runner's
+      # root disk. The same two steps as the test job of rust.yml (main's PR 25 added them after `cargo test --workspace` ran out of disk).
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
         with:
           tool: just@1.40.0,cargo-deny@0.19.9,cargo-audit@0.22.2
@@ -64,6 +71,9 @@ jobs:
             crates/*/fuzz/artifacts
           if-no-files-found: ignore
           retention-days: 14
+      - name: Disk left
+        if: always()
+        run: df -h /
 
   bench:
     runs-on: ${{ vars.LK_BENCH_RUNNER || 'ubuntu-latest' }}
