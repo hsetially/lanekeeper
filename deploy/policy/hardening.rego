@@ -702,9 +702,11 @@ deny contains msg if {
 }
 
 # The seed Job is the record of which file was applied, and a new image, file or revision is a new Job with a new name. The hub's Application
-# prunes (hub.yaml), so without Prune=false Argo CD would delete the old Job, and the ConfigMap that holds its file, at every change, and
-# with them the record that HARDENING.md names as how a change is traced to a person. Old seed Jobs accumulate by design; a person removes
-# them. (Argo CD's reading of the annotation is not verified: its documentation was not reachable when this was written.)
+# prunes (hub.yaml), so without Prune=false Argo CD would delete the old Job, and the ConfigMap that holds its file when the chart made it
+# (seed.content), at every change, and with them the record that HARDENING.md names as how a change is traced to a person. Old seed Jobs
+# accumulate by design; a person removes them. A ConfigMap that a person made (seed.existingConfigMap) is not in the render, so this rule
+# cannot read it: it is the record only while that person keeps every version (HARDENING.md). (Argo CD's reading of the annotation is not
+# verified: its documentation was not reachable when this was written.)
 seed_file_configmaps := [d | some d in lk.of_kind("ConfigMap"); startswith(d.metadata.name, "lanekeeper-hub-seed-")]
 
 keeps_record(d) if object.get(d.metadata, ["annotations", "argocd.argoproj.io/sync-options"], "") == "Prune=false"
