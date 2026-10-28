@@ -69,8 +69,8 @@ swimlanes:
     tenants: [<tenant>]
 ```
 
-Run `hub seed --dry-run <file>` first and read the list it prints (it writes nothing); then the hub chart's seed Job applies it (bump
-`seed.revision` when you edited the ConfigMap in place; a new file is a new Job). It writes one audit event for each row it changes and
+Run `hub seed --dry-run <file>` first and read the list it prints (it writes nothing); then the hub chart's seed Job applies it (make a **new**
+ConfigMap named with the next revision and set `seed.existingConfigMap` and `seed.revision` to match; never edit the old ConfigMap in place, and never reuse a revision: `deploy/INSTALL-GKE.md`, 17.3). It writes one audit event for each row it changes and
 never deletes. The agent can join once the row carries its service account, and not before.
 
 ## 2. Workload Identity, or a join token

@@ -147,6 +147,7 @@ step you will make it.
 | `<EXPORT_ROOT>` | the export root the sentinel watches | the platform team |
 | `<SENTINEL_GSA>` | the Google service account of the sentinel | the platform team (step 15) |
 | `<SEED_FILE>` | the path of the seed file on your machine. It lives outside this repository | you (step 12) |
+| `<SEED_REVISION>` | the seed's revision: a positive whole number that is `seed.revision` and the end of the seed ConfigMap's name (`lanekeeper-hub-seed-<ENV>-<SEED_REVISION>`). It starts at 1 and **only moves forward**: never a number you used before, a revert included | you (steps 12 and 17.3) |
 | `<SEED_JOB>` | the name of the seed Job, `lanekeeper-hub-seed-` and a hash | `kubectl -n lanekeeper get jobs` (step 12) |
 
 **The pull requests come in rounds.** Argo CD runs the commit named in `targetRevision`, and a commit cannot name itself. So a change
@@ -1068,12 +1069,14 @@ gcloud compute ssl-certificates create <SSL_CERT_NAME> --certificate web-cert.pe
 12.3 The seed file. Without it no agent can join. It lists the service account of every swimlane's agent and every sentinel, and it is a reviewed change (whoever applies it makes a Google service account
 the agent of a swimlane). **The real file lives outside this repository** (AGENTS.md, rule 12). Step 15 shows its shape. For the first install, make a file
 that holds `version: 1` and the project row, and add the swimlanes in step 15 (**Not verified**: a file with only a project was not run). Then make the ConfigMap that
-`seed.existingConfigMap` names.
+`seed.existingConfigMap` names. **Its name ends with the revision**, which is 1 for the first install (`lanekeeper-hub-seed-<ENV>-1`), and the chart refuses a name that does not.
+The seed Job is the record of which file was applied, and the ConfigMap is the file: the chart keeps a ConfigMap only when it made it itself (`seed.content`, as kind does), so for this one
+**the record holds only while you keep every version**. Every later change of the seed is a new ConfigMap and a new revision (17.3), and you never edit, replace or delete an old one in place.
 
 Source: the comment in `deploy/values/hub/prod.yaml`, on `seed`.
 
 ```bash
-kubectl -n lanekeeper create configmap lanekeeper-hub-seed-<ENV> --from-file=seed.yaml=<SEED_FILE>
+kubectl -n lanekeeper create configmap lanekeeper-hub-seed-<ENV>-1 --from-file=seed.yaml=<SEED_FILE>
 ```
 
 12.4 The web certificate and key. The hub serves HTTPS itself on its web port, and the load balancer speaks HTTPS to it (the Service `lanekeeper-hub-web` has `appProtocol: HTTPS`,
@@ -1107,7 +1110,7 @@ chains to a CA your browsers trust: the same files may serve both hops. Nothing 
 | `config.git.baseUrl`, `config.git.tenantUrl` | `https://github.com/<GITHUB_ORG>/<BASE_REPO>.git` and `https://github.com/<GITHUB_ORG>/<TENANT_REPO>.git` (`LK_GIT_BASE_URL`, `LK_GIT_TENANT_URL`) | you | yes |
 | `config.git.baseRepo`, `config.git.tenantRepo` | `<GITHUB_ORG>/<BASE_REPO>` and `<GITHUB_ORG>/<TENANT_REPO>` (`LK_GIT_BASE_REPO`, `LK_GIT_TENANT_REPO`) | you | yes |
 | `hub:storage.cmekKey` | the disks key. Without it the volumes fall back to Google's keys with a warning | step 1 | no, but without it the volumes fall back to Google-managed keys and the policy warns |
-| `seed.enabled`, `seed.existingConfigMap`, `seed.revision` | `true`, `lanekeeper-hub-seed-<ENV>`, `"1"`. The chart refuses `seed.enabled` without a ConfigMap | 12.3 | no, but without a seed no agent can join |
+| `seed.enabled`, `seed.existingConfigMap`, `seed.revision` | `true`, `lanekeeper-hub-seed-<ENV>-1`, `1` (a whole number, not a string). The chart refuses `seed.enabled` without a ConfigMap, a revision that is not a positive whole number, and a ConfigMap whose name does not end with `-` and the revision | 12.3 | no, but without a seed no agent can join |
 | `config.bootstrapAdmins` | `<ENTRA_ADMIN_OBJECT_IDS>` (`LK_BOOTSTRAP_ADMINS`). Remove them later | step 9 | no |
 | `hub:imagePullSecrets` | `<PULL_SECRET>`, only if the packages are private | step 6 | no |
 
@@ -1300,11 +1303,7 @@ sentinels:
     service_account: <SENTINEL_GSA>@<SWIMLANE_PROJECT_ID>.iam.gserviceaccount.com
 ```
 
-Put the new file in the ConfigMap and run the seed again: replace the ConfigMap, then change `seed.revision` in `deploy/values/hub/<ENV>.yaml` (a pull request and a revision move, as always).
-
-```bash
-kubectl -n lanekeeper create configmap lanekeeper-hub-seed-<ENV> --from-file=seed.yaml=<SEED_FILE> --dry-run=client -o yaml | kubectl apply -f -
-```
+To run the seed again with a changed file, make a **new** ConfigMap for it and move the revision (17.3). Do not replace the old ConfigMap or `kubectl apply` over it: the old seed Job points at it, and it is the only copy of the file that Job applied.
 
 `hub seed --dry-run` previews the change and writes nothing, but the chart has no dry-run Job and the repository gives no procedure to run it in the cluster (step 18). Read the file carefully before you apply it.
 
@@ -1417,9 +1416,24 @@ the old key. It is refused and the next read succeeds. Connections already open 
 
 17.2 **Deploy a new image.** A merge to `main` publishes new digests (step 6.5). Put the hub digest in `deploy/values/hub/<ENV>.yaml` (and the agent's in the agent values), merge, then change `targetRevision` in a second pull request
 and apply the changed Application file (`deploy/argocd/README.md`, "Moving a revision"). The sync runs the migration Job first, and rolls the hub only when it completes. Migrations are additive, so the old
-hub keeps working on the new schema while it rolls (`crates/hub/README.md`). A new seed or image is a new seed Job (its name carries a hash).
+hub keeps working on the new schema while it rolls (`crates/hub/README.md`). A new seed or image is a new seed Job (its name carries a hash); a seed change follows 17.3.
 
-17.3 **Change the seed.** Replace the ConfigMap (15.1), change `seed.revision`, merge, move the revision. A new seed Job runs, and the old one stays: it and its ConfigMap carry `Prune=false`, because the Job is the record of which file was applied, so old seed Jobs accumulate by design (delete the ones you no longer need with `kubectl -n lanekeeper delete job <name>` and the ConfigMap of the same name). **Not verified:** how Argo CD treats the annotation; it may show the Application as `OutOfSync` while an old Job exists. Run the dry run first if you can (step 18).
+17.3 **Change the seed.** A seed change is a new ConfigMap and a new revision, and nothing old is edited or deleted. The seed Job is the record of which file was applied, and the file is in the ConfigMap that the Job names. The chart keeps a ConfigMap
+only when it made it (`seed.content`); the one in staging and prod is yours (`seed.existingConfigMap`), so it is the record only while you keep every version.
+
+1. Choose the next revision: one more than the last you used (`<SEED_REVISION>`). Make a new ConfigMap from the new file, named with it. Use `create` and not `apply` or `replace`, so that an old ConfigMap cannot be overwritten (`create` fails with `AlreadyExists`, which is what you want).
+
+```bash
+kubectl -n lanekeeper create configmap lanekeeper-hub-seed-<ENV>-<SEED_REVISION> --from-file=seed.yaml=<SEED_FILE>
+```
+
+2. In `deploy/values/hub/<ENV>.yaml` set `seed.existingConfigMap` to that name and `seed.revision` to `<SEED_REVISION>`, a whole number. The chart refuses a name that does not end with `-` and the revision, and a revision that is not a positive whole number. Merge, then move the revision as in 17.2.
+3. A new seed Job runs, and the old one stays, with the old ConfigMap that it points at: the Job and the ConfigMap that the chart makes carry `Prune=false`, so old seed Jobs accumulate by design. Check that the Job ran (`kubectl -n lanekeeper get jobs`: a new `lanekeeper-hub-seed-` Job that has completed). An Application that shows `Synced` does not show that the seed ran (see the next paragraph).
+
+**Never use a revision twice, a revert included; always move forward.** The Job's name is a hash of the revision and the old Job is kept, so a revision that you use again names a Job that has already run. Argo CD finds it complete and the Application `Synced`, and `hub seed` does not run:
+the hub keeps the rows of the later file while Git shows the earlier one, and those rows decide who may join as a swimlane's agent. To revert a seed change, make a new ConfigMap from the earlier file with the next revision number. The chart cannot see the revisions that came before, so it cannot refuse one you used; the review of the pull request that changes `seed.revision` is the check.
+
+Delete a Job you no longer need with `kubectl -n lanekeeper delete job <name>`, and only afterwards the ConfigMap that it named: the record is the pair. **Not verified:** how Argo CD treats the annotation; it may show the Application as `OutOfSync` while an old Job exists. Run the dry run first if you can (step 18).
 
 17.4 **Roll a Cloud KMS key version.** The hub pins a key **version**, so a roll is a deliberate change, and the gcp chart sets no rotation period on the signing keys.
 
@@ -1440,7 +1454,7 @@ The log names a version number or a five-character SQLSTATE and never a host or 
 
 17.6 **Keep GitHub's ranges current.** When the nightly job `hook-ranges` fails, run the two commands of step 5 and move the revision of `gcp.yaml`.
 
-17.7 **Remove the bootstrap administrators** (step 14.4) and keep a list of every seed file you apply.
+17.7 **Remove the bootstrap administrators** (step 14.4) and keep every seed file you apply, with its ConfigMap (17.3): the audit event records the file's hash and not the person, and the file is what the hash is of.
 
 **You should see.** After each change, the Applications `Synced`, the hub `3/3`, and `/readyz` `200` on each replica.
 
@@ -1485,6 +1499,8 @@ that removing them from Git deletes nothing (`deploy/argocd/README.md`, "Prune")
   (off), `LK_EXTRA_DENY_GLOBS`, `LK_TEAMS_ALLOWED_HOSTS`, `LK_GITHUB_API_BASE`, `LK_ENTRA_AUTHORITY_HOST`, `LK_ENTRA_REDIRECT_PATH`, `LK_AUDIT_CHECKPOINT_VERIFY_KMS_REFS`, `LK_MCP_AS_MIRROR`, `LK_GIT_READ_REF`, `LK_GIT_WEBHOOK_REF`.
   A checkpoint key roll needs `LK_AUDIT_CHECKPOINT_VERIFY_KMS_REFS` first.
 - **The agent chart does not set `LK_CONFIG_SERVER_DEPLOYMENT`**, so the agent does not report when the config-server's pods started and check C11 is not reported. Adding it is a contract decision (the agent would watch the config-server's namespace).
+- **The record of the seed holds only while a person keeps the ConfigMaps.** The chart keeps the seed ConfigMap only when it made it (`seed.content`); in staging and prod the file is in a ConfigMap you made (`seed.existingConfigMap`), the Job names it, and nothing alerts if it is edited or
+  deleted. A revision used twice (a revert) runs nothing, and the chart cannot see that (17.3). Both are a person's discipline and a reviewer's check.
 - The migration and seed Jobs' resources are a guess (`jobs.resources`). There is no dry-run Job for the seed. The web certificate's issuer, names and renewal are not defined by the repository, and nothing rotates it.
 - **`/healthz` answers only when the whole start has finished** (`crates/hub/src/process.rs`: the operations socket is bound first and served last), and the start is six steps in a row that are each bounded by `LK_START_TIMEOUT_SECS`
   (8). The startup probe gives the pod 60 s, so the chart refuses a `LK_START_TIMEOUT_SECS` above 8; a larger one needs a wider probe window, which is a change of the contract in `crates/hub/HARDENING.md`, a human's decision.

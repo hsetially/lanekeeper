@@ -42,9 +42,12 @@ pair, and refuses `prod` values under a `staging` label).
   Argo CD runs as `PreSync` (the hook's weight is its sync wave; the chart sets `argocd.argoproj.io/sync-wave` as well), with its account and its
   NetworkPolicy as hooks of a lower weight, so that the first sync has them; the seed Job is an ordinary Job of the same sync, named with a hash so that a
   new image or seed file is a new Job (a Job's pod template cannot change). The old one is **not** pruned although this Application prunes: the seed
-  Job and its ConfigMap carry `Prune=false`, because the Job is the record of which file was applied (`crates/hub/HARDENING.md`), so old seed Jobs
-  accumulate by design and a person deletes the ones they no longer need (`charts/hub/README.md`; Argo CD's reading of the annotation is **Not
-  verified**, its documentation was not reachable). `lanekeeper-workloads` therefore allows
+  Job and the ConfigMap that the chart makes for it carry `Prune=false`, because the Job is the record of which file was applied
+  (`crates/hub/HARDENING.md`), so old seed Jobs accumulate by design and a person deletes the ones they no longer need (`charts/hub/README.md`;
+  Argo CD's reading of the annotation is **Not verified**, its documentation was not reachable). The chart makes the ConfigMap only for
+  `seed.content`; in staging and prod the file comes from a ConfigMap that a person made (`seed.existingConfigMap`), which no Application
+  owns and which is the record only if the person keeps it: a new ConfigMap named with the revision for every change, never edited in
+  place, and a revision that only moves forward (a reverted revision names a Job that has already run, and nothing runs). `lanekeeper-workloads` therefore allows
   `batch/Job` and `ConfigMap` (the seed file), not `CronJob` and not `Secret`.
 - **Automated, self-healing sync.** What is in Git is what runs, and a change made in the cluster by hand is put back. `allowEmpty` is
   refused: a broken template that renders nothing would otherwise prune everything. `Replace` and `Force` (they delete and recreate) and

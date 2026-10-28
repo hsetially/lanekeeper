@@ -452,10 +452,24 @@ a change of who may join, and is reviewed as one. It is validated (a service acc
 lower case: a person's address is refused), it never deletes, `--dry-run` shows the exact change first, and every changed row is one
 audit event with the SHA-256 of the file. The residual risk: the operator who ran the Job is not in the event (the actor is the
 component), and Argo CD, not a person, creates the Job. A change is traced to a person through the hash, the seed Job (its name
-carries a hash of its pod template, the revision and the file; it names the `ConfigMap` it read, which the chart keeps beside it)
-and the commit that moved the Application's `targetRevision`. The chart keeps the old Jobs and their `ConfigMap`s
+carries a hash of its pod template, the revision and, for `seed.content`, the file; it names the `ConfigMap` it read, and carries
+the image) and the commit that moved the Application's `targetRevision`. The chart keeps the old Jobs, and the `ConfigMap`s it made
 (`argocd.argoproj.io/sync-options: Prune=false`), because the hub's Application prunes and the record would go with them; they
 accumulate by design, and a person removes the ones no longer needed.
+
+**The file is kept by the chart only for `seed.content`.** Where it comes from `seed.existingConfigMap` (staging and prod: the real
+file lives outside the repository, so a person makes the ConfigMap), the chart renders no ConfigMap, the Job's name hashes the
+ConfigMap's name and the revision and not the file, and nothing in the cluster holds the file except that ConfigMap. The record
+holds there only if the person keeps every version: each seed change is a new ConfigMap whose name ends with the revision (the
+chart refuses a name that does not), made with `kubectl create` and never edited, replaced or deleted in place, so that the old Job
+still points at the file it applied. Nothing alerts when one is edited or deleted.
+
+**A revision only moves forward, a revert included.** The old Job is kept and its name is a pure function of the pod template, the
+revision, the file and the tries, so a revision that is used again names a Job that has already run: Argo CD finds it complete and
+the Application `Synced`, `hub seed` does not run, and the hub keeps the rows of the later file while Git shows the earlier one.
+The rows decide who may join as a swimlane's agent (S5). A revert is a new revision with the old file, in a new ConfigMap. A
+template cannot see the revisions that came before, so the chart cannot refuse one that was used: `seed.revision` is a positive
+integer, and a reviewer of the pull request that changes it is the check.
 
 ### Where the hub writes
 

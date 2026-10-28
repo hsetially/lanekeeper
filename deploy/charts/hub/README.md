@@ -15,7 +15,7 @@ The platform cluster's Argo CD deploys it with `deploy/argocd/platform/hub.yaml`
 | `Service/lanekeeper-hub-web`, `Gateway`, `HTTPRoute`, `GCPBackendPolicy`, `HealthCheckPolicy` | the users' door: HTTPS only, a named certificate (never a Secret), Cloud Armor attached, health check `/readyz` on 9090 |
 | `NetworkPolicy/lanekeeper-hub`, `FQDNNetworkPolicy/lanekeeper-hub-external` | default deny; only what HARDENING.md lists. Without FQDN policy (`network.fqdnPolicy: false`) the external hosts are reached by address, which is weaker and marked |
 | `Job/lanekeeper-hub-migrate`, `ServiceAccount/lanekeeper-hub-jobs`, `NetworkPolicy/lanekeeper-hub-jobs` | `hub migrate` as the migrator, a Helm `pre-install,pre-upgrade` hook (Argo CD: PreSync); its account and policy are hooks with a lower weight, so that a first install has them. See "The Jobs" |
-| `Job/lanekeeper-hub-seed-<hash>`, `ConfigMap/lanekeeper-hub-seed-<hash>` | with `seed.enabled`: `hub seed` as the application role, after the migration; not a hook. The ConfigMap only with `seed.content` |
+| `Job/lanekeeper-hub-seed-<hash>`, `ConfigMap/lanekeeper-hub-seed-<hash>` | with `seed.enabled`: `hub seed` as the application role, after the migration; not a hook. The ConfigMap only with `seed.content` (with `seed.existingConfigMap` a person made it, named with the revision, and keeps it: "The seed file" below) |
 
 The chart refuses to render (`helm template` stops) without an image digest, a Google service account, non-empty agent source
 ranges, and, for the Gateway, a host name, an address name and exactly one certificate. `values.schema.json` refuses unknown
@@ -96,13 +96,37 @@ of. Exactly one. A Job's pod template cannot change, so the Job is named with a 
 timeout, the Secrets), the revision, the file or the name of its ConfigMap, and the number of tries: a new image or file is a new Job. **The
 old Job stays.** The Job (and the ConfigMap, when the chart made it) carries `argocd.argoproj.io/sync-options: Prune=false`, because the hub's
 Application prunes, and the Job is the record of which file was applied, with which image and when: the hub audits the change but not the
-operator (`crates/hub/HARDENING.md`), so a change is traced to a person through the Job, the hash in its name and the commit that moved
-`targetRevision`. Old seed Jobs therefore accumulate by design, one for each change; a person who no longer needs one deletes it
-(`kubectl -n <namespace> delete job <name>`, and the ConfigMap of the same name). `deploy/policy/hardening.rego` fails a render in which
+operator (`crates/hub/HARDENING.md`), so a change is traced to a person through the Job, the ConfigMap it names, the hash in its name and the
+commit that moved `targetRevision`. Old seed Jobs therefore accumulate by design, one for each change; a person who no longer needs one deletes it
+(`kubectl -n <namespace> delete job <name>`, and with it the ConfigMap that it names: the one of the same name when the chart made it, the one
+`seed.existingConfigMap` named at the time when a person did, and only after the Job). `deploy/policy/hardening.rego` fails a render in which
 the seed Job or its ConfigMap lacks the annotation. **Not verified:** how Argo CD treats the annotation (its documentation was not reachable
 when this was written): that it leaves the resource alone once it is not in Git, and whether it shows the Application as `OutOfSync` or
-with pruning disabled while an old Job exists. The first change of the seed is the test. A ConfigMap that was edited in place is run again by
-changing `seed.revision`. `hub seed --dry-run FILE`, run by a person before the change, prints what it would do (`crates/hub/README.md`).
+with pruning disabled while an old Job exists. The first change of the seed is the test.
+
+**Three rules for `seed.revision` and `seed.existingConfigMap`, which the record rests on:**
+
+1. **The record holds for a ConfigMap that the chart made, and for one that a person made only while the person keeps every version.** The
+   chart keeps the ConfigMap it makes from `seed.content` (that is the one the Job's name carries the hash of). It renders none for
+   `seed.existingConfigMap`, and the Job then names the ConfigMap, the revision and the image, and nothing in the cluster holds the file
+   except that ConfigMap. So **every seed change is a new ConfigMap, named with the revision** (`lanekeeper-hub-seed-prod-3` at revision 3),
+   made with `kubectl create configmap` and **never edited, replaced or deleted in place**: the old Job still points at the old ConfigMap,
+   which still exists. The chart refuses an `existingConfigMap` that does not end with `-` and the revision, so a bump without a new ConfigMap,
+   and a new ConfigMap without a bump, do not render. It cannot see whether a ConfigMap was edited afterwards or deleted: that is a person's
+   (an `immutable: true` ConfigMap, which the API server refuses to change but not to delete, closes the first of the two; `kubectl create
+   configmap` has no flag for it, so it takes a manifest).
+2. **A revision only moves forward, a revert included.** `seed.revision` is a positive integer (the schema says so). The Job's name is a
+   hash of it, and an old Job is kept, so a revision used again, which is what a revert to an earlier seed does if it also sets the revision
+   back, names a Job that has already run. Argo CD finds it complete and the Application `Synced`, and `hub seed` does not run: the hub keeps the
+   row of the later file while Git shows the earlier one, and the rows decide who may join as a swimlane's agent (S5). A revert is a new
+   revision with the old file: a new ConfigMap (`...-4`) that holds the earlier file, and `revision: 4`. A template cannot see the revisions
+   that came before, so the chart cannot refuse a revision that was used; this paragraph and the schema's counter are the guard, and reviewing
+   the pull request that changes `revision` is the check. After a seed change, look at the Job (`kubectl -n <namespace> get jobs`): a new one
+   that has completed is what shows the file ran.
+3. **`seed.revision` is not a way to run an edited ConfigMap again.** That was the earlier advice, and it is wrong now: an edited ConfigMap has
+   lost the file the old Job applied. Make a new ConfigMap and bump the revision.
+
+`hub seed --dry-run FILE`, run by a person before the change, prints what it would do (`crates/hub/README.md`).
 
 **Argo CD's handling of the hook annotations** was written from the source of gitops-engine and not read from its documentation
 (`argo-cd.readthedocs.io` is not reachable from where this was written): `pre-install` and `pre-upgrade` become `PreSync`; the weight
