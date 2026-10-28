@@ -626,3 +626,36 @@ ran out of disk, and what was built was removed; the test reads only the `verify
 - The guide gives `gcloud`, `kubectl run --overrides`, Compute Engine, Workload Identity Federation, Entra and GitHub steps from memory where no file has them, each marked Not verified, and the test
   requires the mark before every `gcloud` block. A reader who finds one wrong should fix the guide and not trust the next.
 - The test lists the files whose change must start it in `ci.yml` and `deploy.yml`; a file that the guide names and nobody lists is caught on the next push to `main` (`ci.yml` has no path filter there).
+
+## Status (written after review round 1: the FIX step after the independent reviewer's verdict on `7ff2d6c`)
+
+The verdict was CHANGES REQUESTED: one blocking finding (B-1) and eleven non-blocking (NB-1 to NB-11). Each was checked against the code first; all twelve were real and none was rejected.
+The rules, guards and checks were fixed with tests that failed first; each new rule was then removed from a copy of the policies, and the tests failed every time (1 to 7 failures each).
+
+### Closed
+
+| Finding | Commit | How it is shown |
+|---|---|---|
+| NB-1 `envFrom` bypassed the env rules | `b2ca79f` | `hardening.rego` denies any `envFrom` on the StatefulSet and both Jobs; 5 Rego tests (red first), 4 planted cases; reproduced first on the rendered prod output (0 failures) |
+| NB-2 a Job of another name could mount the migrator's Secret | `d56b3fc` | `hardening.rego` keys on the Secret (the migration Job's `migrator-credentials`, `database.migratorSecretName` from any values file, the db chart's default name; Secret and projected volumes); 7 red first; 4 planted cases |
+| NB-3 a second NetworkPolicy defeated default deny | `41c654c` | `network.rego` allows only `lanekeeper-hub` and `lanekeeper-hub-jobs` where the hub's StatefulSet or Jobs are rendered; 4 red first; 3 planted cases |
+| NB-4 a secret container's metadata could hold a value | `0fa1524` | `kms.rego`: an allowlist of the labels and annotations the chart writes, and `lanekeeper.io/cmek` must be `fallback` or absent; 4 red first; 3 planted cases |
+| NB-8 tunables that get the pod killed | `bc393e3`, then `f9471a7` | `requireSettings`: caches above their defaults (768 MiB) by more than the limit's headroom over the request are refused, and `LK_START_TIMEOUT_SECS` times the six start steps in a row plus 10 s must fit the 60 s startup window (so at most 8; the first version of the guard, one step against the window, was wrong: `/healthz` is served last, `process.rs` `serve_hub`); the probe numbers have one place; planted cases at the boundaries |
+| NB-9 three settings kept off by the schema alone | `5feab3e` | `hardening.rego` withholds `LK_MCP_NOTIFY_SERVICES`, `LK_RETENTION_ENABLED` and `LK_RETENTION_DRY_RUN` from the StatefulSet in every environment; 4 red first; 3 planted cases; `LK_MCP_AUTH` is not pinned |
+| NB-7 the seed Job's record would be pruned | `0aa1153`, `2b7852f` | the seed Job and its ConfigMap carry `Prune=false`; `hardening.rego` fails a render without it (4 red first); the READMEs and the guide say old Jobs accumulate by design; Argo CD's behaviour marked **Not verified**; `2b7852f` repaired an older planted case that the annotation broke (found by the first full `planted` run) |
+| NB-6 `HARDENING.md` contradicted the chart | `9dbf41c` | the Service is `lanekeeper-hub-replicas`; `/healthz` described as `process.rs` does it (ops socket bound first, served last); the record of the seed described as it is kept; a line on the Jobs' pod label; `cargo test -p hub --test hardening` 7 of 7, `--test justfile_gate` 8 of 8 |
+| NB-5 the install guide | `c00930e` (and `0aa1153` for the seed text) | `ca-init` per key (bind, run, unbind), the pods hardened in `--overrides` (**Not verified**), 10.6 after a failure, no `fqdnPolicy: false` for staging and prod, start-to-Ready is not P11, the webhook secret into a `umask 077` file, Argo CD marked **Not verified**; `install-guide.test.mjs` 31 of 31 |
+| NB-11 the fuzz jobs' disk | `5eea693` | the same two steps as the test job in the fuzz jobs of `rust.yml` and `nightly.yml`, with `Disk left`; `actionlint` clean; `hub-fuzz` has not run on the new head |
+| B-1 the threat model | `b03e76a` | rows for the Jobs, the migrator's credential, the Jobs' network and the second-policy rule, the seed record, the four keys, the ten secrets, the `ca-init` identity, B8, the agent's audience, the withheld settings and the pod-fit guards; statements corrected (database NetworkPolicy, residuals 3, 5, 7, 10, 11, 13, 20, 23); residuals 29 to 36 added; every test cited exists (checked by script) |
+| NB-10 the PR text and the evidence | `c3e322b` | both say what is true; GitHub's results are marked "as observed on GitHub at `62d23dc`", the run for the new head is pending; `bench-check` not re-run, with the reason |
+
+### Checks at this HEAD (the tree at `2b7852f`; commits after it change `docs/` and `plans/` only)
+
+`conftest verify --policy deploy/policy`: 1349 of 1349 (1309 before). `node --test .github/scripts/*.test.mjs`: 205 of 205. `render.sh lint`, `contract`, `data`, `argocd`: exit 0. `render.sh render` and `policy`: exit 1 for the gcp chart
+with staging and prod values only (B5). `render.sh planted`: exit 1 for the one counted Cloud Armor group (B5), 779 cases ok, no `PLANTED FAILED` line. `just ci-lint`: exit 0. `node deploy/schemas/verify.mjs`: exit 0.
+`cargo test -p hub --test hardening`: 7 of 7. `cargo test -p hub --test justfile_gate`: 8 of 8.
+
+### Left for a person
+
+HSM in prod is `kms.rego`'s reading of S5 and is in no decision (`docs/decisions.md` was not touched); a start timeout above 8 needs a wider startup window (a contract change); the 768 MiB cache default and the six start steps are read from the hub and not measured;
+Argo CD's hooks and `Prune=false`, and Config Connector with HSM keys, are never observed; `hub-fuzz` on the new head; and the items in "Needs a human before merge" in `plans/09-deployment-ci.pr.md`.
