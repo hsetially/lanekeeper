@@ -2297,12 +2297,27 @@ planted_templates() {
 
     # 09/fix, J1 to J3, J6, J7: the migration Job and the seed Job.
     expect_helm_failure "a seed with no file" "seed.content or seed.existingConfigMap is required" --set seed.enabled=true --set seed.existingConfigMap=
-    expect_helm_failure "a seed with two files" "set only one of seed.content and seed.existingConfigMap" --set seed.enabled=true --set-literal seed.content='version: 1' --set seed.existingConfigMap=my-seed
+    expect_helm_failure "a seed with two files" "set only one of seed.content and seed.existingConfigMap" --set seed.enabled=true --set-literal seed.content='version: 1' --set seed.existingConfigMap=my-seed-1
     expect_helm_failure "a seed ConfigMap that is not a name" "existingConfigMap" --set seed.enabled=true --set seed.existingConfigMap='My Seed'
     # 256 KiB and a byte: over the file the hub reads. It goes in a values file, because an argument that long is refused by the shell.
     printf 'seed:\n  enabled: true\n  existingConfigMap: ""\n  content: "%s"\n' "$(head -c 262145 /dev/zero | tr '\0' 'a')" >"$work/seed-too-long.yaml"
     expect_helm_failure "a seed file over the hub's limit" "content" -f "$work/seed-too-long.yaml"
+    # A revision is a counter that only moves forward: the Job's name is a hash of it, and an old Job is kept (Prune=false), so a revision that is
+    # used again names a Job that has already run and nothing runs. The schema takes a positive integer; whether it was used before, a template
+    # cannot see (README of the chart).
     expect_helm_failure "a seed revision with a space" "revision" --set seed.revision='a b'
+    expect_helm_failure "a seed revision of zero" "/seed/revision" --set seed.revision=0
+    expect_helm_failure "a negative seed revision" "/seed/revision" --set seed.revision=-1
+    expect_helm_failure "a seed revision that is a string of digits" "/seed/revision" --set-string seed.revision=2
+    expect_helm_failure "an empty seed revision" "/seed/revision" --set seed.revision=
+    expect_helm_failure "a seed revision with a fraction" "/seed/revision" --set seed.revision=1.5
+    expect_helm_failure "a seed revision of a billion and one" "/seed/revision" --set seed.revision=1000000001
+    # The convention that makes the record true when the person made the ConfigMap (the chart keeps only the ConfigMap it made): a new ConfigMap for
+    # every change, named with the revision, so that the old Job still points at the file it applied.
+    expect_helm_failure "a seed ConfigMap that does not end with the revision" "must end with -2" --set seed.enabled=true --set seed.existingConfigMap=my-seed --set seed.revision=2
+    expect_helm_failure "a seed ConfigMap edited in place for a new revision" "must end with -2" --set seed.enabled=true --set seed.existingConfigMap=my-seed-1 --set seed.revision=2
+    expect_helm_failure "a seed ConfigMap that ends with another number than the revision" "must end with -1" --set seed.enabled=true --set seed.existingConfigMap=my-seed-11 --set seed.revision=1
+    expect_helm_failure "a seed ConfigMap that ends with the revision and no dash" "must end with -3" --set seed.enabled=true --set seed.existingConfigMap=my-seed3 --set seed.revision=3
     expect_helm_failure "a migration timeout of zero" "timeoutSeconds" --set migrate.timeoutSeconds=0
     expect_helm_failure "a migration timeout over the hub's limit" "timeoutSeconds" --set migrate.timeoutSeconds=7201
     expect_helm_failure "a seed timeout over the hub's limit" "timeoutSeconds" --set seed.timeoutSeconds=3601
@@ -2359,7 +2374,7 @@ hub_variants() {
     in_variant '^ +value: "10000000"$' "numbers of a million or more are printed whole (Go prints 1e+07)"
     in_variant '^ +value: "0.5"$' "a fraction"
     # J1, J2, J7: the timeouts the Jobs are told and the deadlines they are given (the timeout and five minutes).
-    accept_hub_variant "longer timeouts for the Jobs" --set migrate.timeoutSeconds=1800 --set seed.enabled=true --set seed.existingConfigMap=my-seed --set seed.timeoutSeconds=300
+    accept_hub_variant "longer timeouts for the Jobs" --set migrate.timeoutSeconds=1800 --set seed.enabled=true --set seed.existingConfigMap=my-seed-1 --set seed.timeoutSeconds=300
     in_variant '^ +value: "1800"$' "longer timeouts for the Jobs: the migration timeout"
     in_variant '^  activeDeadlineSeconds: 2100$' "longer timeouts for the Jobs: the migration deadline is the timeout and five minutes"
     in_variant '^  activeDeadlineSeconds: 600$' "longer timeouts for the Jobs: the seed deadline is the timeout and five minutes"
@@ -2367,8 +2382,10 @@ hub_variants() {
     accept_hub_variant "no seed" --set seed.enabled=false
     ! grep -q 'lanekeeper-hub-seed' "$work/variant.yaml" || fail "no seed: the output has a seed Job or a ConfigMap for it"
     grep -q '^  name: lanekeeper-hub-migrate$' "$work/variant.yaml" || fail "no seed: there is no migration Job"
-    accept_hub_variant "a seed from a ConfigMap made out of band" --set seed.enabled=true --set seed.existingConfigMap=my-seed
-    in_variant '^ +name: my-seed$' "a seed from a ConfigMap made out of band"
+    accept_hub_variant "a seed from a ConfigMap made out of band" --set seed.enabled=true --set seed.existingConfigMap=my-seed-1
+    in_variant '^ +name: my-seed-1$' "a seed from a ConfigMap made out of band"
+    accept_hub_variant "a seed from a ConfigMap made out of band, at a later revision" --set seed.enabled=true --set seed.existingConfigMap=my-seed-12 --set seed.revision=12
+    in_variant '^ +name: my-seed-12$' "a seed from a ConfigMap made out of band, at a later revision"
     ! grep -q '^kind: ConfigMap$' "$work/variant.yaml" || fail "a seed from a ConfigMap made out of band: the chart rendered a ConfigMap"
     accept_hub_variant "a seed from a file in the values" --set seed.enabled=true --set seed.existingConfigMap= --set-literal seed.content=$'version: 1\nprojects: []\n'
     in_variant '^kind: ConfigMap$' "a seed from a file in the values"
@@ -2394,19 +2411,19 @@ hub_variants() {
     [ -n "$seed_name" ] && [ "$seed_name" != "$first" ] || fail "a changed seed file has the name of the old Job: the sync would try to change a Job's pod template"
     seed_name_of --set seed.revision=2 --set-literal seed.content="$file"
     [ -n "$seed_name" ] && [ "$seed_name" != "$first" ] || fail "a new seed revision has the name of the old Job"
-    seed_name_of --set-string seed.revision=2 --set-literal seed.content="$file"
-    [ -n "$seed_name" ] && [ "$seed_name" != "$first" ] || fail "a new seed revision (a string) has the name of the old Job"
     seed_name_of --set image.digest=sha256:2222222222222222222222222222222222222222222222222222222222222222 --set-literal seed.content="$file"
     [ -n "$seed_name" ] && [ "$seed_name" != "$first" ] || fail "a new image has the name of the old seed Job"
     seed_name_of --set seed.timeoutSeconds=300 --set-literal seed.content="$file"
     [ -n "$seed_name" ] && [ "$seed_name" != "$first" ] || fail "a new timeout has the name of the old seed Job"
     seed_name_of --set jobs.resources.limits.memory=1Gi --set-literal seed.content="$file"
     [ -n "$seed_name" ] && [ "$seed_name" != "$first" ] || fail "new resources have the name of the old seed Job"
-    seed_name_of --set seed.existingConfigMap=my-seed
+    seed_name_of --set seed.existingConfigMap=my-seed-1
     named="$seed_name"
     [ -n "$named" ] || fail "a seed from a ConfigMap has no Job"
-    seed_name_of --set seed.existingConfigMap=my-other-seed
+    seed_name_of --set seed.existingConfigMap=my-other-seed-1
     [ -n "$seed_name" ] && [ "$seed_name" != "$named" ] || fail "a seed from another ConfigMap has the name of the old Job"
+    seed_name_of --set seed.existingConfigMap=my-seed-2 --set seed.revision=2
+    [ -n "$seed_name" ] && [ "$seed_name" != "$named" ] || fail "a seed from a new ConfigMap at a new revision has the name of the old Job"
     accept_hub_variant "the longest start timeout the startup probe has room for" --set-json 'config.tuning={"LK_START_TIMEOUT_SECS":8}'
     accept_hub_variant "a short start timeout" --set-json 'config.tuning={"LK_START_TIMEOUT_SECS":1}'
     accept_hub_variant "caches that use all the headroom the limit has" --set-json 'config.tuning={"LK_CORPUS_CACHE_MIB":768}'

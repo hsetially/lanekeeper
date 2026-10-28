@@ -183,13 +183,23 @@ seed:
   enabled: false
   # The file is a reviewed change (whoever applies it makes a service account the agent of a swimlane) and the real one lives outside this
   # repository (AGENTS.md rule 12). Give it as the name of a ConfigMap that holds it under the key seed.yaml, made out of band
-  # (kubectl create configmap NAME --from-file=seed.yaml=FILE) ...
+  # (kubectl create configmap NAME-<revision> --from-file=seed.yaml=FILE). The name ends with `-` and the revision below, and a change of the
+  # file is a new ConfigMap and a new revision, never an edit: the chart keeps the ConfigMap only when it made it, so for this one the record
+  # of what was applied holds only while the person keeps every version ...
   existingConfigMap: ""
   # ... or as text here, which the chart makes a ConfigMap of. Only a synthetic file (kind) belongs in the repository. Exactly one of the two.
   content: ""
   # A Job's pod template cannot change, so the Job is named with a short hash of the image digest, this revision, the file (or the name of
-  # its ConfigMap) and the timeout: a new image or file is a new Job. Change this to run the same file again, e.g. after editing a
-  # ConfigMap that was made out of band.
-  revision: ""
+  # its ConfigMap) and the timeout: a new image or file is a new Job.
+  #
+  # A COUNTER THAT ONLY MOVES FORWARD. An old Job is kept (Prune=false: it is the record of what was applied), so a revision that is used
+  # again, a revert included, names a Job that has already run: Argo CD finds it complete and Synced, and `hub seed` does not run, while Git
+  # shows the old file. A revert is a new revision with the old file. A template cannot see the revisions that came before, so the chart
+  # cannot refuse one that was used; the schema takes a positive integer.
+  #
+  # With existingConfigMap, every seed change is a NEW ConfigMap whose name ends with this revision (`lanekeeper-hub-seed-prod-3` at
+  # revision 3; the chart refuses a name that does not), made with kubectl create and never edited or deleted in place: the old Job still
+  # points at the old ConfigMap, which is then still the record of the file it applied. With content, the chart makes and keeps the ConfigMap.
+  revision: 1
   timeoutSeconds: 120
   backoffLimit: 2

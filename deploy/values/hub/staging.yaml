@@ -56,11 +56,14 @@ gateway:
   securityPolicyName: lanekeeper-hub-staging
 
 # The seed (crates/hub/HARDENING.md, "The seed Job"): until it has run with a file that carries the service account of every swimlane's agent
-# and of every NFS VM's sentinel, nothing can join. The file is a reviewed change and lives outside this repository (AGENTS.md rule 12): make the
-# ConfigMap before the first sync, `kubectl -n lanekeeper create configmap lanekeeper-hub-seed-staging --from-file=seed.yaml=FILE`, and bump `revision`
-# after editing it in place (a new file is a new Job). Run `hub seed --dry-run` on the file first (crates/hub/README.md). Without the ConfigMap the
-# seed Job waits for it and fails at its deadline; the hub itself is not held back.
+# and of every NFS VM's sentinel, nothing can join. The file is a reviewed change and lives outside this repository (AGENTS.md rule 12). Make the
+# ConfigMap before the first sync, `kubectl -n lanekeeper create configmap lanekeeper-hub-seed-staging-1 --from-file=seed.yaml=FILE`: its name ends with the
+# revision (the chart refuses a name that does not). A seed change is a NEW ConfigMap `lanekeeper-hub-seed-staging-<revision>` and a new revision here,
+# never an old ConfigMap edited or deleted in place, so that the old Job still points at the file it applied (the chart keeps only a ConfigMap
+# it made, so this one is the record only while you keep every version). The revision only moves forward: a revert is a new revision with the
+# old file, because a revision used again names a Job that has already run and nothing runs. Run `hub seed --dry-run` on the file first
+# (crates/hub/README.md). Without the ConfigMap the seed Job waits for it and fails at its deadline; the hub itself is not held back.
 seed:
   enabled: true
-  existingConfigMap: lanekeeper-hub-seed-staging
-  revision: "1"
+  existingConfigMap: lanekeeper-hub-seed-staging-1
+  revision: 1
