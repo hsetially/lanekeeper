@@ -425,6 +425,111 @@ test_deny_a_replica_without_a_location if {
 	refused(fixtures.gs_secret_remove(secret_name, "/spec/replication/userManaged/replicas/0/location"), "no location")
 }
 
+# 09/fix, round 3 of the review (NB-1): the replication of a container is held as its metadata is. Its location is the key ring's (a replica
+# names where the secret lives, and any string passed), and the keys under replication, userManaged, each replica, customerManagedEncryption
+# and kmsKeyRef are the ones the chart writes: a key of another name is a place for a value (a note, a label, a name) that nothing read.
+replica_path := "/spec/replication/userManaged/replicas/0"
+
+test_deny_a_replica_whose_location_holds_a_value if {
+	refused(fixtures.gs_secret_set(secret_name, concat("/", [replica_path, "location"]), "hunter2"), "a replica's location is hunter2")
+}
+
+test_deny_a_replica_in_another_location_than_the_key_ring if {
+	refused(fixtures.gs_secret_set(secret_name, concat("/", [replica_path, "location"]), "another-region"), "the key ring's is example-location")
+}
+
+test_deny_a_replica_whose_location_is_not_text if {
+	refused(fixtures.gs_secret_set(secret_name, concat("/", [replica_path, "location"]), 12345), "a replica's location is 12345")
+}
+
+test_deny_a_replica_whose_location_is_a_list if {
+	refused(fixtures.gs_secret_set(secret_name, concat("/", [replica_path, "location"]), ["example-location"]), "a replica's location is")
+}
+
+test_deny_a_second_replica_in_another_location_than_the_key_ring if {
+	planted := fixtures.gs_secret_add(secret_name, "/spec/replication/userManaged/replicas/1", {"location": "hunter2"})
+	refused(planted, "a replica's location is hunter2")
+}
+
+test_deny_a_note_under_replication if {
+	refused(fixtures.gs_secret_add(secret_name, "/spec/replication/note", "hunter2"), "spec.replication.note is set")
+}
+
+test_deny_a_note_under_user_managed if {
+	refused(fixtures.gs_secret_add(secret_name, "/spec/replication/userManaged/note", "hunter2"), "spec.replication.userManaged.note is set")
+}
+
+test_deny_a_note_under_a_replica if {
+	refused(fixtures.gs_secret_add(secret_name, concat("/", [replica_path, "note"]), "hunter2"), "spec.replication.userManaged.replicas[].note is set")
+}
+
+test_deny_a_note_under_the_customer_managed_encryption if {
+	planted := fixtures.gs_secret_add(secret_name, concat("/", [replica_path, "customerManagedEncryption/note"]), "hunter2")
+	refused(planted, "customerManagedEncryption.note is set")
+}
+
+test_deny_a_note_under_the_key_reference if {
+	planted := fixtures.gs_secret_add(secret_name, concat("/", [replica_path, "customerManagedEncryption/kmsKeyRef/note"]), "hunter2")
+	refused(planted, "kmsKeyRef.note is set")
+}
+
+test_deny_a_key_reference_that_names_a_resource_beside_the_external_one if {
+	planted := fixtures.gs_secret_add(secret_name, concat("/", [replica_path, "customerManagedEncryption/kmsKeyRef/name"]), "lanekeeper-secrets")
+	refused(planted, "kmsKeyRef.name is set")
+}
+
+test_deny_a_note_under_a_replica_that_is_not_the_first if {
+	planted := fixtures.gs_secret_add(secret_name, "/spec/replication/userManaged/replicas/1", {"location": "example-location", "note": "hunter2"})
+	refused(planted, "spec.replication.userManaged.replicas[].note is set")
+}
+
+test_deny_replicas_that_are_a_string if {
+	refused(fixtures.gs_secret_set(secret_name, "/spec/replication/userManaged/replicas", "hunter2"), "replicas is not a list")
+}
+
+test_deny_replicas_that_are_a_mapping if {
+	planted := fixtures.gs_secret_set(secret_name, "/spec/replication/userManaged/replicas", {"a": {"location": "example-location"}})
+	refused(planted, "replicas is not a list")
+}
+
+test_deny_a_replica_that_is_a_string if {
+	refused(fixtures.gs_secret_set(secret_name, "/spec/replication/userManaged/replicas", ["hunter2"]), "spec.replication.userManaged.replicas[] is not a mapping")
+}
+
+test_deny_a_replication_that_is_a_string if {
+	refused(fixtures.gs_secret_set(secret_name, "/spec/replication", "hunter2"), "userManaged")
+}
+
+test_deny_user_managed_that_is_a_list if {
+	refused(fixtures.gs_secret_set(secret_name, "/spec/replication/userManaged", ["hunter2"]), "userManaged")
+}
+
+test_deny_a_customer_managed_encryption_that_is_a_string if {
+	refused(fixtures.gs_secret_set(secret_name, concat("/", [replica_path, "customerManagedEncryption"]), "hunter2"), "customerManagedEncryption is not a mapping")
+}
+
+test_deny_a_key_reference_that_is_a_string if {
+	refused(fixtures.gs_secret_set(secret_name, concat("/", [replica_path, "customerManagedEncryption/kmsKeyRef"]), "hunter2"), "kmsKeyRef is not a mapping")
+}
+
+test_deny_an_external_key_that_is_a_number if {
+	refused(fixtures.gs_secret_set(secret_name, concat("/", [replica_path, "customerManagedEncryption/kmsKeyRef/external"]), 12345), "not a Cloud KMS key")
+}
+
+test_deny_an_external_key_that_is_a_list if {
+	planted := fixtures.gs_secret_set(secret_name, concat("/", [replica_path, "customerManagedEncryption/kmsKeyRef/external"]), [fixtures.gs_secrets_key])
+	refused(planted, "not a Cloud KMS key")
+}
+
+# Everything the chart writes on a replica passes: the location, the key reference and its external key; a second replica in the same place.
+test_a_secret_with_two_replicas_the_chart_could_write_passes if {
+	planted := fixtures.gs_secret_add(secret_name, "/spec/replication/userManaged/replicas/1", {
+		"location": "example-location",
+		"customerManagedEncryption": {"kmsKeyRef": {"external": fixtures.gs_secrets_key}},
+	})
+	count(deny) == 0 with input as planted
+}
+
 test_deny_a_secret_without_a_key if {
 	planted := fixtures.gs_secret_remove(secret_name, "/spec/replication/userManaged/replicas/0/customerManagedEncryption")
 	refused(planted, "customer-managed key")

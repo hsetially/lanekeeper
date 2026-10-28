@@ -1210,6 +1210,16 @@ planted_gcp_storage() {
     plant "a secret with a finalizer" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/s#^  annotations:$#  finalizers: ["hunter2"]\n&#}' "metadata.finalizers"
     plant "a secret with a generateName" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/s#^  namespace: .*#&\n  generateName: hunter2#}' "metadata.generateName"
     plant "a secret with an owner reference" gcp-storage prod "$in_secret"'{/name: write-preview-key$/,/^---$/s#^  namespace: .*#&\n  ownerReferences:\n    - {apiVersion: v1, kind: ConfigMap, name: hunter2, uid: hunter2}#}' "metadata.ownerReferences"
+    # 09/fix, round 3 (NB-1): the replication is held as the metadata is: its location is the key ring's, and each level has the keys the chart writes.
+    local in_wp="$in_secret"'{/name: write-preview-key$/,/^---$/'
+    plant "a secret whose replica location holds a value" gcp-storage prod "$in_wp"'s#^( *- location:) .*#\1 hunter2#}' "a replica's location is hunter2"
+    plant "a secret whose replica is in another location than the key ring" gcp-storage prod "$in_wp"'s#^( *- location:) .*#\1 another-region#}' "the key ring's is example-location"
+    plant "a note under the replication" gcp-storage prod "$in_wp"'s#^  replication:$#&\n    note: hunter2#}' "spec.replication.note is set"
+    plant "a note under userManaged" gcp-storage prod "$in_wp"'s#^    userManaged:$#&\n      note: hunter2#}' "spec.replication.userManaged.note is set"
+    plant "a note under a replica" gcp-storage prod "$in_wp"'s#^( *- location: .*)$#\1\n          note: hunter2#}' "replicas[].note is set"
+    plant "a note under the customer-managed encryption" gcp-storage prod "$in_wp"'s#^( *customerManagedEncryption:)$#\1\n            note: hunter2#}' "customerManagedEncryption.note is set"
+    plant "a note under the key reference" gcp-storage prod "$in_wp"'s#^( *kmsKeyRef:)$#\1\n              note: hunter2#}' "kmsKeyRef.note is set"
+    plant "replicas that are a string" gcp-storage prod "$in_wp"'{/^      replicas:$/{N;N;N;N;s#.*#      replicas: hunter2#}}}' "replicas is not a list"
     plant "a key of the secrets that Secret Manager may not use" gcp-storage prod 's#gcp-sa-secretmanager#compute-system#' "no IAMPolicyMember grants the Secret Manager service agent"
     plant_append "a secret version, which holds a value" gcp-storage prod $'apiVersion: secretmanager.cnrm.cloud.google.com/v1beta1\nkind: SecretManagerSecretVersion\nmetadata:\n  name: write-preview-key-1\n  namespace: lanekeeper-gcp\nspec:\n  secretRef: {name: write-preview-key}\n  secretData: {value: aHVudGVyMg==}' "never a value"
     plant_append "a Kubernetes Secret in the cloud chart" gcp-storage prod $'apiVersion: v1\nkind: Secret\nmetadata:\n  name: write-preview-key\n  namespace: lanekeeper-gcp\nstringData:\n  value: hunter2' "charts render no Secret"

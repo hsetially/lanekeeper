@@ -6,8 +6,18 @@
 #     P-256 curve; the vault key is a symmetric key that wraps the data keys of the GitHub tokens. Each is used for one thing (the
 #     bindings, in iam.rego, give the hub's account the one role that thing needs on that key), the key material is made by Cloud KMS
 #     and never imported, and removing a resource from Git never destroys a key.
-#   - the Secret Manager secrets the hub reads: containers, never values. A value is put in by a person (the runbook), so no field of
-#     the secret can hold one, and no SecretManagerSecretVersion is rendered.
+#   - the Secret Manager secrets the hub reads: containers, never values. A value is put in by a person (the runbook), and no
+#     SecretManagerSecretVersion is rendered. What this file holds on a container, so that a value has no field to hide in:
+#       * the kind SecretManagerSecretVersion, of any group, is refused;
+#       * the top level is apiVersion, kind, metadata and spec; the spec is replication; the metadata is name, namespace, labels and annotations;
+#       * the labels and annotations are the keys the chart writes, and their values are the chart's own (the standard labels fixed, helm.sh/chart
+#         a bounded version, the project and the namespace the key ring's, the keep annotations and the fallback marker compared whole);
+#       * the replication is userManaged, replicas, and each replica a location (the key ring's) and customerManagedEncryption, kmsKeyRef, external:
+#         at every one of these levels a key of another name is refused, and so is a level that is not a mapping (or replicas that is not a list).
+#     What it does not hold: the NAME of a container (render.sh contract compares the names with the hub chart's), and the text of the external
+#     key (a Cloud KMS key name is held to its shape and to a grant for the Secret Manager agent in this output; it is the one input, secrets.cmekKey,
+#     that a person sets). The key ring and the keys are not held to a list of fields or of metadata keys, only to the rules below: a key
+#     is a name and settings, and holds no secret, but free text in one of its fields is not refused.
 package kms
 
 import rego.v1
@@ -346,7 +356,12 @@ deny contains msg if {
 	msg := sprintf("%s: the annotation lanekeeper.io/cmek must be fallback or absent, and is %q (S7, S10)", [lk.who(s), marker])
 }
 
-replicas(s) := object.get(s, ["spec", "replication", "userManaged", "replicas"], [])
+# The replicas, when they are a list (a string, a mapping or a number is none: the rule below says so, and the count is of a list only).
+replicas_value(s) := object.get(s, ["spec", "replication", "userManaged", "replicas"], [])
+
+replicas(s) := replicas_value(s) if is_array(replicas_value(s))
+
+replicas(s) := [] if not is_array(replicas_value(s))
 
 deny contains msg if {
 	some s in secrets
@@ -356,9 +371,84 @@ deny contains msg if {
 
 deny contains msg if {
 	some s in secrets
+	not is_array(replicas_value(s))
+	msg := sprintf("%s: spec.replication.userManaged.replicas is not a list (S7)", [lk.who(s)])
+}
+
+deny contains msg if {
+	some s in secrets
 	some r in replicas(s)
 	object.get(r, "location", "") == ""
 	msg := sprintf("%s: a replica names no location", [lk.who(s)])
+}
+
+# The location of a replica is the key ring's: the chart writes one value for both, and any other string in this place is a string that nothing
+# else reads (a replica in a region that the chart did not choose, or a note). Where the ring is not in the output the rule above asks for it.
+deny contains msg if {
+	some s in secrets
+	some r in replicas(s)
+	some ring in rings
+	got := object.get(r, "location", "")
+	got != ""
+	want := object.get(ring, ["spec", "location"], "")
+	got != want
+	msg := sprintf("%s: a replica's location is %v and the key ring's is %v; the chart replicates a secret into the one location of its key ring (S10)", [lk.who(s), got, want])
+}
+
+# What a container's replication may hold: the keys the chart writes at each level, and no other. A key of another name (a note, a label, a
+# name) is a place for a value that nothing reads, as one in the metadata is. The levels are named by where they are.
+replication_keys := {
+	"spec.replication": {"userManaged"},
+	"spec.replication.userManaged": {"replicas"},
+	"spec.replication.userManaged.replicas[]": {"location", "customerManagedEncryption"},
+	"spec.replication.userManaged.replicas[].customerManagedEncryption": {"kmsKeyRef"},
+	"spec.replication.userManaged.replicas[].customerManagedEncryption.kmsKeyRef": {"external"},
+}
+
+# The nodes of the replication that are there, each with where it is. A node that is not a mapping is refused by its own rule (below), and the
+# levels under it are read only when it is one.
+replication_nodes(s) := array.concat(
+	[{"at": "spec.replication", "node": n} |
+		n := object.get(s, ["spec", "replication"], null)
+		n != null
+	],
+	array.concat(
+		[{"at": "spec.replication.userManaged", "node": n} |
+			n := object.get(s, ["spec", "replication", "userManaged"], null)
+			n != null
+		],
+		array.concat(
+			[{"at": "spec.replication.userManaged.replicas[]", "node": r} | some r in replicas(s)],
+			array.concat(
+				[{"at": "spec.replication.userManaged.replicas[].customerManagedEncryption", "node": n} |
+					some r in replicas(s)
+					n := object.get(r, "customerManagedEncryption", null)
+					n != null
+				],
+				[{"at": "spec.replication.userManaged.replicas[].customerManagedEncryption.kmsKeyRef", "node": n} |
+					some r in replicas(s)
+					n := object.get(r, ["customerManagedEncryption", "kmsKeyRef"], null)
+					n != null
+				],
+			),
+		),
+	),
+)
+
+deny contains msg if {
+	some s in secrets
+	some n in replication_nodes(s)
+	not is_object(n.node)
+	msg := sprintf("%s: %s is not a mapping (S7)", [lk.who(s), n.at])
+}
+
+deny contains msg if {
+	some s in secrets
+	some n in replication_nodes(s)
+	is_object(n.node)
+	some key, _ in n.node
+	not key in replication_keys[n.at]
+	msg := sprintf("%s: %s.%s is set; the replication of a secret container is %v at this level and nothing else, because any other key is a place for a value that nothing reads (S7)", [lk.who(s), n.at, key, sort(replication_keys[n.at])])
 }
 
 secret_key(r) := object.get(r, ["customerManagedEncryption", "kmsKeyRef", "external"], "")
