@@ -461,6 +461,43 @@ deny contains msg if {
 	msg := sprintf("%s: volume db-credentials must be the Secret the hub mounts, the application role's; the seed refuses any other role, and the migrator's credential does not belong in it (HARDENING.md)", [lk.who(j.doc)])
 }
 
+# The migrator owns the database, so its Secret is for the migration Job and for nothing else. The rules above key on the hub's names (a Job
+# named lanekeeper-hub-...), and a workload of any other name is not held to them, so this one keys on the Secret: whatever the migration
+# Job mounts as migrator-credentials, whatever database.migratorSecretName says in a values file, and the name the db chart documents. A
+# secretKeyRef or secretRef to it is refused for every container by secrets.rego (S7).
+default_migrator_secret := "lanekeeper-db-migrator"
+
+migrator_secrets := ({default_migrator_secret} | {s |
+	some j in lk.named("Job", migrate_job_name)
+	some v in object.get(lk.pod_spec(j), "volumes", [])
+	v.name == "migrator-credentials"
+	s := v.secret.secretName
+}) | {s |
+	some f in input
+	not is_array(f.contents)
+	s := f.contents.database.migratorSecretName
+	is_string(s)
+}
+
+is_migration_job(d) if {
+	d.kind == "Job"
+	d.metadata.name == migrate_job_name
+}
+
+# The Secrets a volume mounts: a Secret volume, and the Secret sources of a projected volume.
+volume_secrets(v) := {v.secret.secretName} if v.secret.secretName
+
+volume_secrets(v) := {s.secret.name | some s in v.projected.sources; s.secret.name} if v.projected.sources
+
+deny contains msg if {
+	some p in lk.pods
+	not is_migration_job(p.doc)
+	some v in object.get(p.spec, "volumes", [])
+	some s in volume_secrets(v)
+	s in migrator_secrets
+	msg := sprintf("%s: volume %s mounts the Secret %s, the migrator's, which owns the database; only Job/%s mounts it (S9, S21)", [lk.who(p.doc), v.name, s, migrate_job_name])
+}
+
 seed_items := [{"key": "seed.yaml", "path": "seed.yaml"}]
 
 deny contains msg if {

@@ -538,6 +538,12 @@ planted_hub_jobs() {
     plant_cmd "a hub without its migration Job" hub kind "there is no migration Job" drop_doc Job lanekeeper-hub-migrate
     plant_append "a third Job of the hub's image" hub kind $'apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: lanekeeper-hub-backfill\n  namespace: lanekeeper\nspec:\n  template:\n    spec:\n      containers:\n        - name: c\n          image: x' "only two Jobs"
 
+    # 09/fix, round 1 (NB-2): the migrator's Secret is the migration Job's alone, whatever a workload is called.
+    plant_append "a Job of another name that mounts the migrator's Secret" hub kind $'apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: other-job\n  namespace: lanekeeper\nspec:\n  template:\n    spec:\n      containers:\n        - name: c\n          image: x\n      volumes:\n        - name: creds\n          secret:\n            secretName: lanekeeper-db-migrator' "Job/other-job: volume creds mounts the Secret lanekeeper-db-migrator"
+    plant_append "a Deployment that mounts the migrator's Secret through a projected volume" hub kind $'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: tool\n  namespace: lanekeeper\nspec:\n  template:\n    spec:\n      containers:\n        - name: c\n          image: x\n      volumes:\n        - name: creds\n          projected:\n            sources:\n              - secret:\n                  name: lanekeeper-db-migrator' "Deployment/tool: volume creds mounts the Secret lanekeeper-db-migrator"
+    plant "the hub that mounts the migrator's Secret" hub kind '/^kind: StatefulSet$/,/^---$/{s/^( *)volumes:$/&\n\1  - name: creds\n\1    secret:\n\1      secretName: lanekeeper-db-migrator/}' "StatefulSet/lanekeeper-hub: volume creds mounts the Secret lanekeeper-db-migrator"
+    plant "the seed Job that mounts the migrator's Secret as a second volume" hub kind "$sd"'s/^( *)volumes:$/&\n\1  - name: creds\n\1    secret:\n\1      secretName: lanekeeper-db-migrator/' ": volume creds mounts the Secret lanekeeper-db-migrator"
+
     # The order.
     plant "a migration Job that is not a hook" hub kind "$mig"'{/helm\.sh\/hook: /d}' "helm.sh/hook must be pre-install,pre-upgrade"
     plant "a migration Job after the install" hub kind "$mig"'s/helm.sh\/hook: .*/helm.sh\/hook: post-install,post-upgrade/' "helm.sh/hook must be pre-install,pre-upgrade"

@@ -1061,3 +1061,70 @@ test_env_from_in_another_workload_is_not_the_hubs_business if {
 	msgs := deny with input as planted
 	count([m | some m in msgs; contains(m, "envFrom")]) == 0
 }
+
+# ============================================================================================================================
+# 09/fix, round 1 of the review (NB-2): the migrator is the database's owner, and its Secret is mounted by the migration Job and by no
+# other workload. The Job rules key on the hub's name prefix, so a Job (or any workload) of another name that mounts the Secret is not held
+# to them; this rule keys on the Secret.
+# ============================================================================================================================
+
+migrator_secret_volume(secret_name) := {"name": "creds", "secret": {"secretName": secret_name}}
+
+with_workload(doc) := fixtures.with_doc(doc)
+
+other_job(volume) := {
+	"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": "other-job", "namespace": "lanekeeper"},
+	"spec": {"template": {"spec": {"containers": [{"name": "c", "image": "x"}], "volumes": [volume]}}},
+}
+
+test_the_migration_job_alone_mounts_the_migrator_secret if {
+	msgs := deny with input as fixtures.hub
+	count([m | some m in msgs; contains(m, "migrator")]) == 0
+}
+
+test_deny_a_job_of_another_name_that_mounts_the_migrator_secret if {
+	planted := with_workload(other_job(migrator_secret_volume("lanekeeper-db-migrator")))
+	refused(planted, "Job/other-job: volume creds mounts the Secret lanekeeper-db-migrator")
+}
+
+test_deny_a_deployment_that_mounts_the_migrator_secret if {
+	planted := with_workload({
+		"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "tool", "namespace": "lanekeeper"},
+		"spec": {"template": {"spec": {"containers": [{"name": "c", "image": "x"}], "volumes": [migrator_secret_volume("lanekeeper-db-migrator")]}}},
+	})
+	refused(planted, "Deployment/tool: volume creds mounts the Secret lanekeeper-db-migrator")
+}
+
+test_deny_the_seed_job_that_mounts_the_migrator_secret_as_an_extra_volume if {
+	refused(job_add(seed, concat("", [job_pod_path, "volumes/-"]), migrator_secret_volume("lanekeeper-db-migrator")), "Job/lanekeeper-hub-seed-0123456789: volume creds mounts the Secret lanekeeper-db-migrator")
+}
+
+test_deny_the_hub_that_mounts_the_migrator_secret_as_an_extra_volume if {
+	planted := fixtures.patch("StatefulSet", "lanekeeper-hub", [{"op": "add", "path": "/spec/template/spec/volumes/-", "value": migrator_secret_volume("lanekeeper-db-migrator")}])
+	refused(planted, "StatefulSet/lanekeeper-hub: volume creds mounts the Secret lanekeeper-db-migrator")
+}
+
+# A projected volume can carry a Secret as one of its sources.
+test_deny_a_projected_volume_that_carries_the_migrator_secret if {
+	planted := with_workload(other_job({"name": "p", "projected": {"sources": [{"secret": {"name": "lanekeeper-db-migrator"}}]}}))
+	refused(planted, "Job/other-job: volume p mounts the Secret lanekeeper-db-migrator")
+}
+
+# The name is whatever the migration Job mounts, and whatever database.migratorSecretName says.
+test_deny_the_migrator_secret_under_the_name_the_migration_job_mounts if {
+	renamed := fixtures.patch("Job", migrate, [{"op": "replace", "path": "/spec/template/spec/volumes/1/secret/secretName", "value": "renamed-migrator"}])
+	combined := [{"path": "rendered/hub.yaml", "contents": array.concat(renamed[0].contents, [other_job(migrator_secret_volume("renamed-migrator"))])}, renamed[1]]
+	refused(combined, "Job/other-job: volume creds mounts the Secret renamed-migrator")
+}
+
+test_deny_the_migrator_secret_under_the_name_a_values_file_gives_it if {
+	values := {"path": "deploy/values/hub/prod.yaml", "contents": {"database": {"migratorSecretName": "tenant-owner"}}}
+	planted := array.concat(with_workload(other_job(migrator_secret_volume("tenant-owner"))), [values])
+	refused(planted, "Job/other-job: volume creds mounts the Secret tenant-owner")
+}
+
+test_another_secret_is_not_the_migrators if {
+	planted := with_workload(other_job(migrator_secret_volume("some-other-secret")))
+	msgs := deny with input as planted
+	count([m | some m in msgs; contains(m, "migrator")]) == 0
+}
