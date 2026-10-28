@@ -701,6 +701,27 @@ deny contains msg if {
 	msg := sprintf("%s: the seed Job is a Job, not a hook (argocd.argoproj.io/hook): it runs after the migration, and a missing seed must not stop a deploy (README item 2, step f)", [lk.who(j.doc)])
 }
 
+# The seed Job is the record of which file was applied, and a new image, file or revision is a new Job with a new name. The hub's Application
+# prunes (hub.yaml), so without Prune=false Argo CD would delete the old Job, and the ConfigMap that holds its file, at every change, and
+# with them the record that HARDENING.md names as how a change is traced to a person. Old seed Jobs accumulate by design; a person removes
+# them. (Argo CD's reading of the annotation is not verified: its documentation was not reachable when this was written.)
+seed_file_configmaps := [d | some d in lk.of_kind("ConfigMap"); startswith(d.metadata.name, "lanekeeper-hub-seed-")]
+
+keeps_record(d) if object.get(d.metadata, ["annotations", "argocd.argoproj.io/sync-options"], "") == "Prune=false"
+
+deny contains msg if {
+	some j in hub_job_list
+	j.kind == "seed"
+	not keeps_record(j.doc)
+	msg := sprintf("%s: the annotation argocd.argoproj.io/sync-options: Prune=false is missing; Argo CD would prune the old seed Job at the next change, and with it the record of which file was applied (HARDENING.md)", [lk.who(j.doc)])
+}
+
+deny contains msg if {
+	some d in seed_file_configmaps
+	not keeps_record(d)
+	msg := sprintf("%s: the annotation argocd.argoproj.io/sync-options: Prune=false is missing; Argo CD would prune the seed file with the Job that applied it, and the record of which file was applied (HARDENING.md)", [lk.who(d)])
+}
+
 # What the Jobs need before the migration pod is made: on a first install nothing of the chart's other resources exists yet. Each is a hook
 # of the same events with a lower weight. It is kept (before-hook-creation): the seed Job, which is not a hook, runs as it and under its policy.
 jobs_prerequisites := array.concat(job_accounts, lk.named("NetworkPolicy", jobs_name))

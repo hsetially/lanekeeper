@@ -1162,3 +1162,33 @@ test_deny_a_withheld_setting_in_the_migration_job if {
 	planted := job_add(migrate, concat("", [job_c, "env/-"]), {"name": "LK_RETENTION_ENABLED", "value": "true"})
 	refused(planted, "LK_RETENTION_ENABLED")
 }
+
+# ============================================================================================================================
+# 09/fix, round 1 of the review (NB-7): a seed Job is the record of which file was applied (HARDENING.md, "Why the file is a reviewed
+# change"), and a new image, file or revision is a new Job with a new name. The hub's Application prunes, so Argo CD would delete the old Job
+# (and the ConfigMap with its file) on every change, and the record with it. Both carry Prune=false, so old seed Jobs accumulate by design.
+# ============================================================================================================================
+
+sync_options_path := "/metadata/annotations/argocd.argoproj.io~1sync-options"
+
+test_deny_a_seed_job_that_a_sync_may_prune if {
+	refused(job_remove(seed, sync_options_path), "Job/lanekeeper-hub-seed-0123456789: the annotation argocd.argoproj.io/sync-options: Prune=false is missing")
+}
+
+test_deny_a_seed_job_that_is_set_to_be_pruned if {
+	refused(job_set(seed, sync_options_path, "Prune=true"), "Prune=false is missing")
+}
+
+test_deny_a_seed_job_with_the_option_among_others_that_replace if {
+	refused(job_set(seed, sync_options_path, "Prune=false,Replace=true"), "Prune=false is missing")
+}
+
+test_deny_the_seed_file_that_a_sync_may_prune if {
+	refused(fixtures.patch("ConfigMap", seed, [{"op": "remove", "path": sync_options_path}]), "ConfigMap/lanekeeper-hub-seed-0123456789: the annotation argocd.argoproj.io/sync-options: Prune=false is missing")
+}
+
+# The migration Job is a hook that is replaced at each sync; the record rule is for the seed Job and its file alone.
+test_the_migration_job_is_not_asked_to_keep_old_copies if {
+	msgs := deny with input as fixtures.hub
+	count([m | some m in msgs; contains(m, "Prune=false")]) == 0
+}

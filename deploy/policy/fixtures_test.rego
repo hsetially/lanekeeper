@@ -493,6 +493,7 @@ seed_job := {
 		"name": seed_job_name,
 		"namespace": namespace,
 		"labels": jobs_labels("seed"),
+		"annotations": {"argocd.argoproj.io/sync-options": "Prune=false"},
 	},
 	"spec": {
 		"backoffLimit": 2,
@@ -536,7 +537,7 @@ seed_job := {
 seed_configmap := {
 	"apiVersion": "v1",
 	"kind": "ConfigMap",
-	"metadata": {"name": seed_job_name, "namespace": namespace, "labels": jobs_labels("seed")},
+	"metadata": {"name": seed_job_name, "namespace": namespace, "labels": jobs_labels("seed"), "annotations": {"argocd.argoproj.io/sync-options": "Prune=false"}},
 	"immutable": true,
 	"data": {"seed.yaml": "version: 1\n"},
 }

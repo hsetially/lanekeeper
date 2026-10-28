@@ -1375,7 +1375,7 @@ the old key. It is refused and the next read succeeds. Connections already open 
 and apply the changed Application file (`deploy/argocd/README.md`, "Moving a revision"). The sync runs the migration Job first, and rolls the hub only when it completes. Migrations are additive, so the old
 hub keeps working on the new schema while it rolls (`crates/hub/README.md`). A new seed or image is a new seed Job (its name carries a hash).
 
-17.3 **Change the seed.** Replace the ConfigMap (15.1), change `seed.revision`, merge, move the revision. The old seed Job is pruned and a new one runs. Run the dry run first if you can (step 18).
+17.3 **Change the seed.** Replace the ConfigMap (15.1), change `seed.revision`, merge, move the revision. A new seed Job runs, and the old one stays: it and its ConfigMap carry `Prune=false`, because the Job is the record of which file was applied, so old seed Jobs accumulate by design (delete the ones you no longer need with `kubectl -n lanekeeper delete job <name>` and the ConfigMap of the same name). **Not verified:** how Argo CD treats the annotation; it may show the Application as `OutOfSync` while an old Job exists. Run the dry run first if you can (step 18).
 
 17.4 **Roll a Cloud KMS key version.** The hub pins a key **version**, so a roll is a deliberate change, and the gcp chart sets no rotation period on the signing keys.
 

@@ -549,6 +549,11 @@ planted_hub_jobs() {
     plant "the hub that mounts the migrator's Secret" hub kind '/^kind: StatefulSet$/,/^---$/{s/^( *)volumes:$/&\n\1  - name: creds\n\1    secret:\n\1      secretName: lanekeeper-db-migrator/}' "StatefulSet/lanekeeper-hub: volume creds mounts the Secret lanekeeper-db-migrator"
     plant "the seed Job that mounts the migrator's Secret as a second volume" hub kind "$sd"'s/^( *)volumes:$/&\n\1  - name: creds\n\1    secret:\n\1      secretName: lanekeeper-db-migrator/' ": volume creds mounts the Secret lanekeeper-db-migrator"
 
+    # 09/fix, round 1 (NB-7): the seed Job and its file are the record of what was applied, so a sync that prunes must not delete them.
+    plant "a seed Job that a sync may prune" hub kind '/^kind: Job$/,/^---$/{/sync-options: Prune=false/d}' "Job/lanekeeper-hub-seed-"
+    plant "a seed Job set to be pruned" hub kind '/^kind: Job$/,/^---$/s#Prune=false#Prune=true#' "Prune=false is missing; Argo CD would prune the old seed Job"
+    plant "a seed file that a sync may prune" hub kind '/^kind: ConfigMap$/,/^---$/{/sync-options: Prune=false/d}' "Prune=false is missing; Argo CD would prune the seed file"
+
     # The order.
     plant "a migration Job that is not a hook" hub kind "$mig"'{/helm\.sh\/hook: /d}' "helm.sh/hook must be pre-install,pre-upgrade"
     plant "a migration Job after the install" hub kind "$mig"'s/helm.sh\/hook: .*/helm.sh\/hook: post-install,post-upgrade/' "helm.sh/hook must be pre-install,pre-upgrade"

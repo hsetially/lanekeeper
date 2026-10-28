@@ -41,7 +41,10 @@ pair, and refuses `prod` values under a `staging` label).
 - **The hub's Jobs are in the workloads project, and nothing else of `batch` is.** The migration Job is a Helm `pre-install,pre-upgrade` hook, which
   Argo CD runs as `PreSync` (the hook's weight is its sync wave; the chart sets `argocd.argoproj.io/sync-wave` as well), with its account and its
   NetworkPolicy as hooks of a lower weight, so that the first sync has them; the seed Job is an ordinary Job of the same sync, named with a hash so that a
-  new image or seed file is a new Job (a Job's pod template cannot change) and the old one is pruned. `lanekeeper-workloads` therefore allows
+  new image or seed file is a new Job (a Job's pod template cannot change). The old one is **not** pruned although this Application prunes: the seed
+  Job and its ConfigMap carry `Prune=false`, because the Job is the record of which file was applied (`crates/hub/HARDENING.md`), so old seed Jobs
+  accumulate by design and a person deletes the ones they no longer need (`charts/hub/README.md`; Argo CD's reading of the annotation is **Not
+  verified**, its documentation was not reachable). `lanekeeper-workloads` therefore allows
   `batch/Job` and `ConfigMap` (the seed file), not `CronJob` and not `Secret`.
 - **Automated, self-healing sync.** What is in Git is what runs, and a change made in the cluster by hand is put back. `allowEmpty` is
   refused: a broken template that renders nothing would otherwise prune everything. `Replace` and `Force` (they delete and recreate) and

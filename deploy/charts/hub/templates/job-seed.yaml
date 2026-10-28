@@ -28,6 +28,9 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "lanekeeper-hub.jobLabels" (list . "seed") | nindent 4 }}
+  annotations:
+    # The file the Job applied is part of the record; see the Job below.
+    argocd.argoproj.io/sync-options: Prune=false
 # The name carries the hash of the file, so this ConfigMap never changes: a new file is a new ConfigMap.
 immutable: true
 data:
@@ -37,7 +40,9 @@ data:
 {{ end -}}
 # Not a hook: it runs after the migration (a PreSync hook of the same sync), and a missing or failed seed must not stop a deploy. The hub
 # starts and serves with no swimlanes meanwhile; an agent can join once this has run with its service account. Safe to retry, and safe to
-# run twice at once. A finished Job is left (a log of who applied which file), and a new image, file or revision is a new Job.
+# run twice at once. A finished Job is left, and a new image, file or revision is a new Job. The Job and its ConfigMap are the record of
+# which file was applied, with which image, when (the hub audits the change but not the operator, HARDENING.md), so neither is pruned: Argo CD
+# prunes what leaves Git, and a new name is the old one leaving. Old seed Jobs accumulate by design, and a person removes them (README).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -45,6 +50,8 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "lanekeeper-hub.jobLabels" (list . "seed") | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
 spec:
   backoffLimit: {{ $seed.backoffLimit | int }}
   activeDeadlineSeconds: {{ add ($seed.timeoutSeconds | int) (include "lanekeeper-hub.jobDeadlineMargin" . | int) }}

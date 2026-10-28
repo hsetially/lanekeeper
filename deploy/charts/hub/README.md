@@ -92,9 +92,16 @@ runs): on a first install a pre-install hook runs before the rest of the chart e
 join. It is a reviewed change, and the real one lives outside this repository (AGENTS.md rule 12): give `seed.existingConfigMap` (a ConfigMap
 that holds it under the key `seed.yaml`, made out of band) or, for a synthetic file such as kind's, `seed.content`, which the chart makes a ConfigMap
 of. Exactly one. A Job's pod template cannot change, so the Job is named with a short hash of its pod template (the image, the resources, the
-timeout, the Secrets), the revision, the file or the name of its ConfigMap, and the number of tries: a new image or file is a new Job, and
-Argo CD prunes the old one. A ConfigMap that was edited in place is run again by changing `seed.revision`. `hub seed --dry-run FILE`, run by a
-person before the change, prints what it would do (`crates/hub/README.md`).
+timeout, the Secrets), the revision, the file or the name of its ConfigMap, and the number of tries: a new image or file is a new Job. **The
+old Job stays.** The Job (and the ConfigMap, when the chart made it) carries `argocd.argoproj.io/sync-options: Prune=false`, because the hub's
+Application prunes, and the Job is the record of which file was applied, with which image and when: the hub audits the change but not the
+operator (`crates/hub/HARDENING.md`), so a change is traced to a person through the Job, the hash in its name and the commit that moved
+`targetRevision`. Old seed Jobs therefore accumulate by design, one for each change; a person who no longer needs one deletes it
+(`kubectl -n <namespace> delete job <name>`, and the ConfigMap of the same name). `deploy/policy/hardening.rego` fails a render in which
+the seed Job or its ConfigMap lacks the annotation. **Not verified:** how Argo CD treats the annotation (its documentation was not reachable
+when this was written): that it leaves the resource alone once it is not in Git, and whether it shows the Application as `OutOfSync` or
+with pruning disabled while an old Job exists. The first change of the seed is the test. A ConfigMap that was edited in place is run again by
+changing `seed.revision`. `hub seed --dry-run FILE`, run by a person before the change, prints what it would do (`crates/hub/README.md`).
 
 **Argo CD's handling of the hook annotations** was written from the source of gitops-engine and not read from its documentation
 (`argo-cd.readthedocs.io` is not reachable from where this was written): `pre-install` and `pre-upgrade` become `PreSync`; the weight
