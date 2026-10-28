@@ -9,8 +9,11 @@ policy test. `tests/hardening.rs` reads the YAML blocks below, so the file and t
 - `hardening_contract_is_s16_complete`: the Pod block below has every control S16 lists, mounts nothing writable
   except the three paths the code writes to, and passes the paths it uses to the code through the right variables.
 - `hardening_contract_egress_is_hub_kube_configserver_metadata_dns_only`: the NetworkPolicy block allows exactly five
-  destinations, none of them wider than a /24.
-- `hardening_lint_rejects_planted_violations`: each of those checks is shown to refuse a manifest that breaks it.
+  destinations, none of them wider than a /24, and the config-server only in one named namespace; the example
+  `LK_CONFIG_SERVER_URL` reaches that namespace and is accepted by the agent's own parser.
+- `hardening_lint_rejects_planted_violations`, `hardening_lint_rejects_planted_config_server_namespaces` and
+  `hardening_lint_rejects_planted_config_server_copies_and_urls`: each of those checks is shown to refuse a manifest that
+  breaks it.
 
 Values in `<angle brackets>` or marked "from values" are the chart's to fill in. The documentation addresses
 (`203.0.113.0/24`, `198.51.100.0/24`) stand for the real hub and API server addresses.
@@ -113,8 +116,9 @@ spec:
       value: /var/lib/lanekeeper/spool
     - name: LK_TMP_DIR
       value: /tmp
+    # The service by its full name: a short name resolves only in the agent's own namespace.
     - name: LK_CONFIG_SERVER_URL
-      value: http://csp-configuration-server:8888
+      value: http://csp-configuration-server.latest-pci.svc.cluster.local:8888
     - name: LK_HEALTH_ADDR
       value: 0.0.0.0:9090
     volumeMounts:
@@ -170,9 +174,23 @@ everything not listed is denied (S17, S18).
 |---|---|---|
 | The hub's address | 443/TCP | The gRPC stream (S6), and `Join`. |
 | The Kubernetes API server | 443/TCP | Watches, restarts and the two Secrets (`RBAC.md`). |
-| `app: csp-configuration-server` pods in the same namespace | 8888/TCP | `NotifyConfigServer` and `FetchServed` (T12), only when the hub asks. The endpoint has no authentication (Q37); that is why nothing else may reach it from here, and why the hub requires the Operator role and audits the call. |
+| `app: csp-configuration-server` pods in the config-server's namespace (the namespace of `LK_CONFIG_SERVER_DEPLOYMENT`, which is usually not the agent's own) | 8888/TCP | `NotifyConfigServer` and `FetchServed` (T12), only when the hub asks. The endpoint has no authentication (Q37); that is why nothing else may reach it from here, and why the hub requires the Operator role and audits the call. |
 | `169.254.169.254` | 80/TCP | The GKE metadata server, for the Workload Identity token (S5). |
 | `kube-dns` in `kube-system` | 53/UDP and 53/TCP | Names. |
+
+**The config-server's namespace.** The config-server does not run in the agent's namespace. It runs in the namespace of its
+swimlane (`latest-pci` in the example below), and the rule names that namespace. A `podSelector` alone selects pods in the
+policy's own namespace, so the config-server's pods would not match, and every `NotifyConfigServer` and `FetchServed` would be
+denied by default. The namespace is a value per swimlane: it is the namespace of `LK_CONFIG_SERVER_DEPLOYMENT`
+(`namespace/name`; the agent refuses to start unless that namespace is one of `LK_NAMESPACES`), and the chart writes the same
+value into the policy and into `LK_CONFIG_SERVER_URL`. It must be a single explicit namespace, chosen in the same `to` entry as
+the pods (so both must hold) by the label Kubernetes sets itself, `kubernetes.io/metadata.name`. It is never
+`namespaceSelector: {}` (every namespace), never an expression or another label, and never `kube-system`, `kube-public` or
+`kube-node-lease`. The endpoint has no authentication (Q37), so nothing in the protocol tells the agent whether the pods that
+answer are the config-server: which pods the agent may call is decided by this rule alone, and a rule wider than one namespace
+lets the agent's requests reach, and be answered by, anything labelled `app: csp-configuration-server` in the cluster. The
+service in `LK_CONFIG_SERVER_URL` is written out in full (`<service>.<namespace>.svc.cluster.local`), because a short name
+resolves only in the agent's own namespace.
 
 The NFS export is mounted by the node's kubelet, so it needs no rule here. The kubelet's probes come from the node.
 The only other traffic in is Prometheus, from the `monitoring` namespace, on the health port.
@@ -207,8 +225,12 @@ spec:
     - ipBlock: {cidr: 198.51.100.2/32}
     ports:
     - {protocol: TCP, port: 443}
+  # The config-server's namespace is a value per swimlane (latest-pci here), in the same `to` entry as the pods.
   - to:
-    - podSelector:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: latest-pci
+      podSelector:
         matchLabels:
           app: csp-configuration-server
     ports:
@@ -239,6 +261,10 @@ These stay open after the tests pass. Each is a residual risk in `docs/threat-mo
 - **What the cluster enforces.** Whether the cluster's CNI enforces NetworkPolicy at all (the policy is the contract; a
   cluster without enforcement ignores it), and whether the node's kubelet and the metadata server are reachable from the
   pod network, are properties of each cluster (Q1). The chart's policy test (09) checks the rendering, not the cluster.
+- **The namespace value.** The tests fix the shape of the rule, not the value: one explicit namespace, never a wide selector
+  or a namespace of the cluster's own components. A wrong value either denies the config-server calls (the rule matches
+  nothing), or, if it names a namespace that holds another service labelled `app: csp-configuration-server`, sends the agent's
+  requests there. The value is per swimlane and is checked by the chart's contract test (09), not by the cluster.
 - **The NFS server.** `root_squash`, `anonuid` and the export options are Q11. The pod runs as the uid that owns the
   files, which makes a compromised agent as powerful over the export as that uid is, and no more.
 - **Digests age.** A pinned base image does not receive security fixes until someone changes the pin. The pin is renewed by

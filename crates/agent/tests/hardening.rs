@@ -394,6 +394,42 @@ fn environment_problems(container: &Value) -> Vec<String> {
     problems
 }
 
+/// Namespaces of the cluster's own components. The config-server is never in one of them, and a rule that says so would
+/// open the agent's egress to whatever else carries the label there.
+const SYSTEM_NAMESPACES: [&str; 3] = ["kube-system", "kube-public", "kube-node-lease"];
+
+/// The config-server's namespace, when the destination names it the one way the contract allows. The config-server runs in
+/// a namespace of its own, not the agent's, and its endpoint has no authentication (Q37), so the namespace is written down:
+/// a `namespaceSelector` with exactly one `matchLabels` entry, `kubernetes.io/metadata.name: <name>` (the label Kubernetes
+/// sets itself and nobody edits), no `matchExpressions`. It sits in the same `to` entry as the `podSelector`, so both must
+/// hold. A missing selector means the agent's own namespace, `{}` means every namespace, and an expression can match any
+/// number of them; all are refused.
+fn config_server_namespace(destination: &Value) -> Result<String, String> {
+    let refuse = |why: &str| Err(format!("the config-server destination {why}: {destination}"));
+    let Some(selector) = destination["namespaceSelector"].as_object() else {
+        return refuse("names no namespace, so it selects the agent's own");
+    };
+    let (1, Some(labels)) = (
+        selector.len(),
+        selector.get("matchLabels").and_then(Value::as_object),
+    ) else {
+        return refuse("must select its namespace with matchLabels alone (not `{}`, not matchExpressions)");
+    };
+    let (1, Some(name)) = (
+        labels.len(),
+        labels.get("kubernetes.io/metadata.name").and_then(Value::as_str),
+    ) else {
+        return refuse("must select its namespace by one label, kubernetes.io/metadata.name");
+    };
+    if name.is_empty() {
+        return refuse("has an empty namespace name");
+    }
+    if SYSTEM_NAMESPACES.contains(&name) {
+        return refuse("is in a namespace of the cluster's own components");
+    }
+    Ok(name.to_owned())
+}
+
 /// How a destination is described, so that the list of egress rules can be compared with the five places the agent
 /// talks to. IP blocks must be small (a /0, or anything wider than a /24, is "the internet").
 fn egress_destinations(policy: &Value) -> Result<BTreeSet<String>, String> {
@@ -425,9 +461,8 @@ fn egress_destinations(policy: &Value) -> Result<BTreeSet<String>, String> {
                 && destination["podSelector"]["matchLabels"]["k8s-app"] == "kube-dns"
             {
                 "dns".to_owned()
-            } else if destination["namespaceSelector"].is_null()
-                && destination["podSelector"]["matchLabels"]["app"] == "csp-configuration-server"
-            {
+            } else if destination["podSelector"]["matchLabels"]["app"] == "csp-configuration-server" {
+                config_server_namespace(destination)?;
                 "config-server".to_owned()
             } else {
                 return Err(format!("an unrecognised egress destination: {destination}"));
@@ -440,6 +475,48 @@ fn egress_destinations(policy: &Value) -> Result<BTreeSet<String>, String> {
         }
     }
     Ok(found)
+}
+
+/// Every egress destination that selects pods by the config-server's label, whatever else it says.
+fn config_server_destinations(policy: &Value) -> Vec<&Value> {
+    policy["spec"]["egress"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|rule| rule["to"].as_array().into_iter().flatten())
+        .filter(|d| d["podSelector"]["matchLabels"]["app"] == "csp-configuration-server")
+        .collect()
+}
+
+/// The URL the example gives the agent reaches the namespace the policy allows. A short service name resolves only in the
+/// agent's own namespace, so the example spells the service out, and the agent's own parser must accept what it spells.
+fn config_server_url_problems(docs: &[Value]) -> Vec<String> {
+    let namespaces: Vec<String> = of_kind(docs, "NetworkPolicy")
+        .into_iter()
+        .flat_map(config_server_destinations)
+        .filter_map(|d| config_server_namespace(d).ok())
+        .collect();
+    let [namespace] = namespaces.as_slice() else {
+        return vec![format!(
+            "the policy must name one config-server namespace, found {namespaces:?}"
+        )];
+    };
+    let pods = of_kind(docs, "Pod");
+    let Some(url) = pods
+        .first()
+        .and_then(|pod| env_value(&pod["spec"]["containers"][0], "LK_CONFIG_SERVER_URL"))
+    else {
+        return vec!["the Pod sets no LK_CONFIG_SERVER_URL".to_owned()];
+    };
+    let want = format!("http://csp-configuration-server.{namespace}.svc.cluster.local:8888");
+    match agent::config::BaseUrl::parse(&url, "http") {
+        Err(why) => vec![format!("LK_CONFIG_SERVER_URL {url:?} {why}")],
+        Ok(parsed) if parsed.as_str() == want => Vec::new(),
+        Ok(_) => vec![format!(
+            "LK_CONFIG_SERVER_URL is {url:?}, and must be {want:?}: the service in the policy's namespace, by its full name, \
+             because a short name resolves only in the agent's own namespace"
+        )],
+    }
 }
 
 fn network_problems(docs: &[Value]) -> Vec<String> {
@@ -496,6 +573,14 @@ fn network_problems(docs: &[Value]) -> Vec<String> {
             "expected two IP blocks (the hub, the Kubernetes API), found {https_blocks}"
         ));
     }
+    // One namespace, not two: the destinations are compared as a set, which would hide a second copy of the rule.
+    let config_server_destinations = config_server_destinations(policy).len();
+    if config_server_destinations != 1 {
+        problems.push(format!(
+            "expected one config-server destination, in one namespace, found {config_server_destinations}"
+        ));
+    }
+    problems.extend(config_server_url_problems(docs));
     // Ingress: only the monitoring namespace, only the health port.
     let ingress = policy["spec"]["ingress"].as_array().cloned().unwrap_or_default();
     for rule in &ingress {
@@ -538,16 +623,26 @@ fn hardening_contract_egress_is_hub_kube_configserver_metadata_dns_only() {
     assert!(problems.is_empty(), "{problems:#?}");
 }
 
+/// `good` with the first `from` replaced by `to`. It fails when `from` is not in the file, so that a renamed block cannot
+/// turn a planted case into a no-op.
+fn planted(good: &str, from: &str, to: &str) -> String {
+    assert!(
+        good.contains(from),
+        "the planted edit needs {from:?} in HARDENING.md"
+    );
+    good.replacen(from, to, 1)
+}
+
+/// The config-server's pods, and its `to` entry, exactly as `HARDENING.md` has them: the namespace and the pods in one
+/// entry, so that both must hold. The planted cases below change one thing in it.
+const CONFIG_SERVER_PODS: &str =
+    "      podSelector:\n        matchLabels:\n          app: csp-configuration-server\n";
+const CONFIG_SERVER_TO: &str = "    - namespaceSelector:\n        matchLabels:\n          kubernetes.io/metadata.name: latest-pci\n      podSelector:\n        matchLabels:\n          app: csp-configuration-server\n";
+
 #[test]
 fn hardening_lint_rejects_planted_violations() {
     let good = hardening();
-    let must_replace = |from: &str, to: &str| {
-        assert!(
-            good.contains(from),
-            "the planted edit needs {from:?} in HARDENING.md"
-        );
-        good.replacen(from, to, 1)
-    };
+    let must_replace = |from: &str, to: &str| planted(&good, from, to);
     let pod_cases = [
         must_replace("readOnlyRootFilesystem: true", "readOnlyRootFilesystem: false"),
         must_replace(
@@ -583,10 +678,7 @@ fn hardening_lint_rejects_planted_violations() {
         // A wider block for the Kubernetes API.
         must_replace("cidr: 198.51.100.2/32", "cidr: 10.0.0.0/8"),
         // Any destination on the config-server port: the `to` is dropped.
-        must_replace(
-            "- to:\n    - podSelector:\n        matchLabels:\n          app: csp-configuration-server\n    ports:",
-            "- ports:",
-        ),
+        must_replace(&format!("- to:\n{CONFIG_SERVER_TO}    ports:"), "- ports:"),
         // The config-server on a second port.
         must_replace("port: 8888", "port: 8080"),
         // Ingress from anywhere.
@@ -602,4 +694,164 @@ fn hardening_lint_rejects_planted_violations() {
             "planted network violation {n} was accepted"
         );
     }
+}
+
+/// A config-server `to` entry with this `namespaceSelector` (written at the indent of a list item) and the right pods.
+fn with_namespace_selector(selector: &str) -> String {
+    format!("    - {selector}\n{CONFIG_SERVER_PODS}")
+}
+
+/// A config-server `to` entry that selects this one namespace by its name label.
+fn in_namespace(name: &str) -> String {
+    with_namespace_selector(&format!(
+        "namespaceSelector:\n        matchLabels:\n          kubernetes.io/metadata.name: {name}"
+    ))
+}
+
+/// Each case must be refused for the reason it names, not for another.
+fn assert_refused_for_their_reasons(cases: &[(&str, String)]) {
+    for (n, (reason, bad)) in cases.iter().enumerate() {
+        let problems = network_problems(&documents(bad)).join("\n");
+        assert!(
+            problems.contains(reason),
+            "planted config-server violation {n} was not refused for {reason:?}: {problems}"
+        );
+    }
+}
+
+/// The config-server is in a namespace of its own, and its endpoint has no authentication (Q37): the rule has to name that
+/// one namespace, in one entry with the pods, and name nothing wider.
+#[test]
+fn hardening_lint_rejects_planted_config_server_namespaces() {
+    let good = hardening();
+    let must_replace = |from: &str, to: &str| planted(&good, from, to);
+    let mut cases = vec![
+        // The old form, from before the config-server had a namespace of its own: no namespaceSelector, which selects the
+        // agent's own namespace. The contract wants the namespace written down.
+        (
+            "names no namespace",
+            must_replace(
+                CONFIG_SERVER_TO,
+                "    - podSelector:\n        matchLabels:\n          app: csp-configuration-server\n",
+            ),
+        ),
+        // Every namespace.
+        (
+            "matchLabels alone",
+            must_replace(
+                CONFIG_SERVER_TO,
+                &with_namespace_selector("namespaceSelector: {}"),
+            ),
+        ),
+        // An expression instead of the name label: it can match any number of namespaces.
+        (
+            "matchLabels alone",
+            must_replace(
+                CONFIG_SERVER_TO,
+                &with_namespace_selector(
+                    "namespaceSelector:\n        matchExpressions:\n        - {key: kubernetes.io/metadata.name, operator: In, values: [latest-pci]}",
+                ),
+            ),
+        ),
+        // The name label and another one: a second condition is a different contract, and labels can be edited.
+        (
+            "by one label",
+            must_replace(
+                CONFIG_SERVER_TO,
+                &with_namespace_selector(
+                    "namespaceSelector:\n        matchLabels:\n          kubernetes.io/metadata.name: latest-pci\n          team: swimlane",
+                ),
+            ),
+        ),
+        // A label that is not the name label.
+        (
+            "by one label",
+            must_replace(
+                CONFIG_SERVER_TO,
+                &with_namespace_selector(
+                    "namespaceSelector:\n        matchLabels:\n          name: latest-pci",
+                ),
+            ),
+        ),
+        // No name.
+        (
+            "empty namespace name",
+            must_replace(CONFIG_SERVER_TO, &in_namespace("\"\"")),
+        ),
+        // A namespace and no pods: every pod in it.
+        (
+            "unrecognised egress destination",
+            must_replace(
+                CONFIG_SERVER_TO,
+                "    - namespaceSelector:\n        matchLabels:\n          kubernetes.io/metadata.name: latest-pci\n",
+            ),
+        ),
+        // Other pods in the config-server's namespace.
+        (
+            "unrecognised egress destination",
+            must_replace(
+                CONFIG_SERVER_TO,
+                "    - namespaceSelector:\n        matchLabels:\n          kubernetes.io/metadata.name: latest-pci\n      podSelector:\n        matchLabels:\n          app: something-else\n",
+            ),
+        ),
+    ];
+    // The namespaces of the cluster's own components are never where the config-server is.
+    for system in SYSTEM_NAMESPACES {
+        cases.push((
+            "cluster's own components",
+            must_replace(CONFIG_SERVER_TO, &in_namespace(system)),
+        ));
+    }
+    assert_refused_for_their_reasons(&cases);
+}
+
+/// One namespace, not two (the destinations are compared as a set, which would hide a second copy of the rule), and an
+/// example URL that reaches the namespace the rule allows.
+#[test]
+fn hardening_lint_rejects_planted_config_server_copies_and_urls() {
+    let good = hardening();
+    let must_replace = |from: &str, to: &str| planted(&good, from, to);
+    let rule = format!("{CONFIG_SERVER_TO}    ports:\n    - {{protocol: TCP, port: 8888}}\n");
+    let url = "value: http://csp-configuration-server.latest-pci.svc.cluster.local:8888";
+    let cases = [
+        // Two namespaces, in one rule and in two.
+        (
+            "found 2",
+            must_replace(
+                CONFIG_SERVER_TO,
+                &format!("{CONFIG_SERVER_TO}{}", in_namespace("other-swimlane")),
+            ),
+        ),
+        (
+            "found 2",
+            must_replace(
+                &rule,
+                &format!(
+                    "{rule}  - to:\n{}    ports:\n    - {{protocol: TCP, port: 8888}}\n",
+                    in_namespace("other-swimlane")
+                ),
+            ),
+        ),
+        // The example URL as a short name, which resolves only in the agent's own namespace.
+        (
+            "full name",
+            must_replace(url, "value: http://csp-configuration-server:8888"),
+        ),
+        // The example URL for another namespace than the one the rule allows, and for another port.
+        (
+            "full name",
+            must_replace(
+                url,
+                "value: http://csp-configuration-server.other-swimlane.svc.cluster.local:8888",
+            ),
+        ),
+        (
+            "full name",
+            must_replace(
+                url,
+                "value: http://csp-configuration-server.latest-pci.svc.cluster.local:8080",
+            ),
+        ),
+    ];
+    assert_refused_for_their_reasons(&cases);
 }
