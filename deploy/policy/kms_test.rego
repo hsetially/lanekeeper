@@ -234,6 +234,44 @@ test_deny_a_secret_with_annotations_that_could_hold_a_value if {
 	refused(fixtures.gs_secret_add(secret_name, "/spec/annotations", {"value": "hunter2"}), "replication and nothing else")
 }
 
+# 09/fix, round 1 of the review (NB-4): the metadata of a container can hold a value as well as its spec can. Labels and annotations are
+# readable by anyone who can list secrets; only the keys the chart writes are allowed.
+test_deny_a_secret_with_a_metadata_annotation_that_could_hold_a_value if {
+	refused(fixtures.gs_secret_add(secret_name, "/metadata/annotations/value", "hunter2"), "metadata.annotations.value")
+}
+
+test_deny_a_secret_with_a_metadata_label_that_could_hold_a_value if {
+	refused(fixtures.gs_secret_add(secret_name, "/metadata/labels/password", "hunter2"), "metadata.labels.password")
+}
+
+test_deny_a_secret_with_a_note_in_a_namespaced_annotation if {
+	refused(fixtures.gs_secret_add(secret_name, "/metadata/annotations/lanekeeper.io~1note", "hunter2"), "metadata.annotations.lanekeeper.io/note")
+}
+
+test_deny_a_secret_with_the_fallback_marker_holding_something_else if {
+	planted := fixtures.gs_secret_add(secret_name, "/metadata/annotations/lanekeeper.io~1cmek", "hunter2")
+	refused(planted, "lanekeeper.io/cmek must be fallback")
+}
+
+# Everything the chart writes on a secret passes: the standard labels (with managed-by and the chart's), the project, the two keep
+# annotations and the fallback marker.
+test_a_secret_with_every_key_the_chart_writes_passes if {
+	planted := fixtures.gs_patch("SecretManagerSecret", secret_name, [
+		{"op": "add", "path": "/metadata/labels/app.kubernetes.io~1managed-by", "value": "Helm"},
+		{"op": "add", "path": "/metadata/labels/helm.sh~1chart", "value": "lanekeeper-gcp-0.1.0"},
+		{"op": "remove", "path": "/spec/replication/userManaged/replicas/0/customerManagedEncryption"},
+		{"op": "add", "path": "/metadata/annotations/lanekeeper.io~1cmek", "value": "fallback"},
+	])
+	count(deny) == 0 with input as planted
+}
+
+# The same label or annotation on a key is not this rule's business: a key holds no value, and its metadata is held to its own rules.
+test_a_note_on_a_key_is_not_the_secrets_rule if {
+	planted := fixtures.gs_patch("KMSCryptoKey", key_name, [{"op": "add", "path": "/metadata/annotations/note", "value": "x"}])
+	msgs := deny with input as planted
+	count([m | some m in msgs; contains(m, "metadata.annotations")]) == 0
+}
+
 test_deny_a_secret_of_no_purpose if {
 	refused(fixtures.gs_secret_set(secret_name, "/metadata/labels/lanekeeper.io~1purpose", "docs"), "lanekeeper.io/purpose")
 }

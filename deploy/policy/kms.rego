@@ -204,8 +204,8 @@ deny contains msg if {
 }
 
 # A container has a replication policy and nothing else. Every other field is a way for a value, a lifetime or a notification to get in:
-# a ttl or an expireTime deletes the secret on a date the hub does not know, annotations and labels are readable by anyone who can list
-# secrets, a rotation or a topic starts something that nobody asked for.
+# a ttl or an expireTime deletes the secret on a date the hub does not know, annotations and labels (of the spec) are readable by anyone
+# who can list secrets, a rotation or a topic starts something that nobody asked for. The metadata is held to its own list, below.
 allowed_secret_fields := {"replication"}
 
 deny contains msg if {
@@ -213,6 +213,39 @@ deny contains msg if {
 	some field, _ in s.spec
 	not field in allowed_secret_fields
 	msg := sprintf("%s: spec.%s is set; a secret container is its replication and nothing else: no value, no ttl or expiry, no rotation, no topic, no annotation (S7)", [lk.who(s), field])
+}
+
+# The metadata of a container is a way in as well: labels and annotations are free-form strings, readable by anyone who can list secrets in
+# the namespace, and nothing else reads them. Only the keys the chart writes are allowed (the standard labels and the two the policies read;
+# the project, the two keep annotations, and the marker of the fallback), so a key that is not one of them is refused whatever its name.
+allowed_secret_labels := {
+	"app.kubernetes.io/name", "app.kubernetes.io/instance", "app.kubernetes.io/part-of", "app.kubernetes.io/managed-by",
+	"helm.sh/chart", "lanekeeper.io/purpose", "lanekeeper.io/environment",
+}
+
+allowed_secret_annotations := {
+	"cnrm.cloud.google.com/project-id", "cnrm.cloud.google.com/deletion-policy", "argocd.argoproj.io/sync-options", "lanekeeper.io/cmek",
+}
+
+deny contains msg if {
+	some s in secrets
+	some key, _ in object.get(s.metadata, "labels", {})
+	not key in allowed_secret_labels
+	msg := sprintf("%s: metadata.labels.%s is not a label a secret container carries (%v); a label is readable by anyone who can list secrets, and is no place for a value (S7)", [lk.who(s), key, sort(allowed_secret_labels)])
+}
+
+deny contains msg if {
+	some s in secrets
+	some key, _ in object.get(s.metadata, "annotations", {})
+	not key in allowed_secret_annotations
+	msg := sprintf("%s: metadata.annotations.%s is not an annotation a secret container carries (%v); an annotation is readable by anyone who can list secrets, and is no place for a value (S7)", [lk.who(s), key, sort(allowed_secret_annotations)])
+}
+
+deny contains msg if {
+	some s in secrets
+	marker := object.get(s.metadata, ["annotations", "lanekeeper.io/cmek"], "fallback")
+	marker != "fallback"
+	msg := sprintf("%s: the annotation lanekeeper.io/cmek must be fallback or absent, and is %q (S7, S10)", [lk.who(s), marker])
 }
 
 replicas(s) := object.get(s, ["spec", "replication", "userManaged", "replicas"], [])
