@@ -1,5 +1,118 @@
 # Evidence 09: Deployment, CI and supply chain
 
+**Read this part first. It is the truth at the end of review round 1 (the FIX step after the reviewer's verdict on `7ff2d6c`), and it replaces what the history below says wherever the two disagree.** The history below it (from "History before the merge of prompt 18") was written before prompt 18 reached `main` and before the hub chart, the gcp chart's keys and the install guide existed; it still says that the hub binary exits 1 (plan A1) and that the kind job is red by design. Both are out of date. Real output only; nothing is ticked that a command did not prove.
+
+Two kinds of statement are in this part, and each says which it is:
+
+- **Run here**: a command in the sandbox of this FIX step (no Docker daemon, about 6.7 GB of disk; `conftest` ran from the pinned binary through a stand-in for `docker`), on the tree at `2b7852f` (`render.sh planted` ran there; `conftest`, the script tests, `ci-lint` and the schema check were re-run on it). Commits after it change `docs/` and `plans/` only.
+- **As observed on GitHub at `62d23dc`**: read from GitHub's pages by the orchestrator, not produced by a command here. `62d23dc` is an earlier head of this branch (`b5db76d`, `5a3ab7d`, `4dc5c3b`, `1f8fe02`, `99a00b9` and `7ff2d6c` follow it, and then this round). **The run for the newer head is pending**, and nothing below claims it.
+
+## What changed in this round, and what is still open
+
+The reviewer's verdict on `7ff2d6c` was CHANGES REQUESTED, with one blocking finding (B-1, the threat model) and eleven non-blocking ones. Each was checked against the code before anything was changed (`receiving-code-review`); all twelve were real, and none was rejected. The rules, guards and checks (NB-1 to NB-4 and NB-7 to NB-9) were fixed with tests that failed first (counts below); the documents (B-1, NB-5, NB-6, NB-10) and the workflows (NB-11) are held by the checks named in their rows. The commits:
+
+| Finding | What was true | Fixed in |
+|---|---|---|
+| B-1 | The deployment section of `docs/threat-model.md` stated as fact things the previous rounds made false (the database's NetworkPolicy, residual 3, residual 13) and had no rows for the Jobs, the keys and secrets, the temporary `ca-init` identity, the config-server rule and the agent's audience. Rows and residuals added or corrected in place; the section is the only part of the file changed. | `b03e76a` (`09/fix: the deployment section of the threat model says what the charts now do`) |
+| NB-1 | `envFrom: configMapRef` on the migrate container or on the StatefulSet of the rendered prod output gave 0 failures. | `b2ca79f` (5 Rego tests red first; 4 planted cases) |
+| NB-2 | A Job named `other-job` that mounts `lanekeeper-db-migrator` passed every policy (Job rules key on the `lanekeeper-hub-` prefix). | `d56b3fc` (7 red first; 4 planted cases) |
+| NB-3 | A second NetworkPolicy with `egress: [{}]` on the hub's or the Jobs' label gave 0 failures. | `41c654c` (4 red first; 3 planted cases) |
+| NB-4 | A `SecretManagerSecret` with `metadata.annotations.value` or `metadata.labels.password` gave 0 failures. | `0fa1524` (4 red first; 3 planted cases) |
+| NB-5 | The install guide bound `signerVerifier` on both CA keys at once, ran a `ca-init` pod without a security context, offered `fqdnPolicy: false` for staging and prod, called start-to-Ready P11, printed the webhook secret, and stated Argo CD's behaviour as fact. | `c00930e`, and `0aa1153` for the seed text; `install-guide.test.mjs` 31 of 31 |
+| NB-6 | `HARDENING.md` named the headless Service `lanekeeper-hub` and said `/healthz` does not depend on the database. In `process.rs` the operations socket is bound first and **served last**, so `/healthz` answers only when the whole start has finished. | `9dbf41c`; `cargo test -p hub --test hardening` 7 of 7, `--test justfile_gate` 8 of 8 |
+| NB-7 | The hub's Application prunes and the seed Job is named by a hash, so Argo CD would have deleted the old Job (the record `HARDENING.md` relies on) at every change. Job and ConfigMap now carry `Prune=false`; a rule and three planted cases. | `0aa1153` (4 red first); `2b7852f` repaired one older planted case that the new annotation broke |
+| NB-8 | The schema let through `LK_START_TIMEOUT_SECS` up to 120 against a 60 s startup window, and `LK_CORPUS_CACHE_MIB` up to 4096 (and an unbounded blob cache) against a 2 Gi limit; all rendered. Reading `process.rs` for NB-6 showed that even a bound of 50 s was wrong, because the probe has to outlast six start steps in a row: the guard allows at most 8. | `bc393e3`, then `f9471a7` |
+| NB-9 | `LK_MCP_NOTIFY_SERVICES`, `LK_RETENTION_ENABLED` and `LK_RETENTION_DRY_RUN` were kept off by the closed schema alone. | `5feab3e` (4 red first; 3 planted cases) |
+| NB-10 | `plans/09-deployment-ci.pr.md` and this file described the old stub refusal. | the commit that carries this file |
+| NB-11 | `hub-fuzz` was added to the fuzz matrices of `rust.yml` and `nightly.yml` and the fuzz jobs had no free-disk step. The same two steps as the test job (main's PR 25) are in both, with `Disk left`. | `5eea693`; `actionlint` clean, `consistency.test.mjs` unaffected |
+
+**Each new policy rule was removed from a copy of the policies in turn, and the tests failed every time** (`envFrom` 5, the migrator's Secret 7, the second NetworkPolicy 4, the three metadata rules of `kms.rego` 1, 2 and 1, the withheld settings 4, the two Prune rules 3 and 1), so no rule is vacuous.
+
+**Still open, and none of it is this round's to close:** B5 (GitHub's hook ranges: the gcp chart cannot be rendered with staging or prod values, so `render`, `policy` and one counted Cloud Armor case of `planted` fail; a human runs the command); acceptance item 3 (`/readyz` on three replicas is not met, and the production image cannot meet it in kind: below); the red CI jobs with their causes (below); Argo CD's behaviour with the hooks and with `Prune=false`, and Config Connector's with HSM keys, never observed; and the decisions in "Needs a human" in `plans/09-deployment-ci.pr.md`. Not run in this round: `cargo xtask bench-check` (no benchmark, crate source or `perf/` file changed; the one Rust file touched, `crates/hub/tests/hardening.rs`, got a comment and no code), `just verify` (80 minutes, and the disk), `just verify-09` as one command (it stops at `deploy-render` for B5, as it did), and anything that needs Docker.
+
+## Gates (run here, on the tree at `2b7852f`)
+
+| Command | Result |
+|---|---|
+| `conftest verify --policy deploy/policy` | **1349 of 1349** (1309 at `7ff2d6c`; 40 new tests) |
+| `node --test .github/scripts/*.test.mjs` | **205 of 205** (includes `install-guide.test.mjs`, 31 of 31) |
+| `deploy/tests/render.sh lint` | exit 0 |
+| `deploy/tests/render.sh contract` | exit 0 |
+| `deploy/tests/render.sh data` | exit 0 (the db chart and the gcp chart without Cloud Armor: kubeconform, the policies, their planted cases, the cross-chart check) |
+| `deploy/tests/render.sh argocd` | exit 0 |
+| `deploy/tests/render.sh render` | **exit 1, B5 only**: kubeconform refuses nothing; the gcp chart does not render with the staging or prod values (`cloudArmor.githubHookRanges is empty`) |
+| `deploy/tests/render.sh policy` | **exit 1, B5 only**: `policy_one` fails for the gcp chart with staging and with prod, and the Argo CD scope check for the gcp chart with prod; every other chart and environment passes every policy |
+| `deploy/tests/render.sh planted` | **exit 1, B5 only**: 779 cases ok, no `PLANTED FAILED` line, and one counted failure, the Cloud Armor group, which is not run because the gcp chart cannot render. (A first run on `5eea693` had 778 ok and a second failure: an older planted case that the new `Prune=false` annotation had broken, repaired in `2b7852f`.) |
+| `just ci-lint` | exit 0 (actionlint, zizmor offline with no findings, SHA pins, workflow rules, shellcheck over 35 scripts) |
+| `node deploy/schemas/verify.mjs` | exit 0 (38 files equal the lock) |
+| `cargo test -p hub --test hardening` | **7 of 7** (`CARGO_INCREMENTAL=0`, the target directory of the prompt 18 worktree; the test executables over 50 MB were deleted afterwards) |
+| `cargo test -p hub --test justfile_gate` | **8 of 8** |
+
+## As observed on GitHub at `62d23dc` (not re-run; the run for the newer head is pending)
+
+| Job | Result |
+|---|---|
+| "kind, the hub chart with CloudNativePG" (run 40665155670) | **passed**. Its summary table: hub PASS, "the migration and seed Jobs completed; all 3 replicas stopped at their first Google step (exit 1) with no setting, database or schema error in their logs"; `/readyz` on 3 replicas **NOT MEASURED**; P11 **NOT MEASURED**; acceptance 3 **NOT MET by this job** |
+| rust `test` (`cargo test --workspace`), `lint`, `sqlx`, `fuzz-smoke`, `engine-fuzz`, the hub `image` job, `scan-test`, policies and scripts, both Rocky Linux installs, the sentinel's build, signing and SBOM, `e2e` | success |
+| `charts` | red: the gcp chart only (B5) |
+| `osv`, `supply-chain` | red: RUSTSEC-2026-0414 in pulldown-cmark 0.13.4, through prost-build. The fix, 0.13.5, was released on 2026-10-21 and is 14 days old on 2026-11-04 (rule 15). `Cargo.lock` equals main's, so main fails the same way |
+| the seven `*-fuzz` jobs that run `cargo deny` | red: rustls-webpki 0.103.15 and 0.103.16 and webpki-root-certs 1.0.10, under the 14-day rule until 2026-11-02 and 2026-11-03, and the same pulldown-cmark |
+| `workflows` | red on `62d23dc` only for a shellcheck SC2016 finding that `5a3ab7d` fixed |
+
+## Acceptance checklist
+
+The prompt's three items:
+
+- [ ] `just verify-09` passes: lint, kubeconform, conftest and the SHA-pin test. **NOT MET (B5).** Proof of what does pass, run here: `render.sh lint` 0, `contract` 0, `data` 0, `argocd` 0, `just ci-lint` 0, 1349 policy tests, the SHA-pin test inside the 205 script tests. What fails is `render` and `policy` for the gcp chart with staging and prod values, because `deploy/values/hub/github-hook-ranges.yaml` is the unresolved marker.
+- [ ] Images are signed, and their SBOMs and provenance attestations are published. **NOT PROVEN.** SBOMs are made and scanned (the `image` and `scan-test` jobs passed on GitHub at `62d23dc`). Keyless signing, the SBOM attestation, provenance, the Cloud KMS signature and `gh attestation verify` run in the `publish` job on `main` and tags, and have not been seen; only a key-based push, sign, attest and verify ran, against a registry on localhost (earlier head).
+- [ ] A kind cluster in CI runs the hub chart with CloudNativePG, and `/readyz` passes on all 3 replicas. **NOT MET, by design of the hub (prompt 18, G23: no fakes in a release build).** The production image reaches Secret Manager, Cloud KMS, Cloud Storage and Entra at start, so in kind it stops at its first Google step. The kind job asserts what the image can do, and it passed on GitHub at `62d23dc`: CloudNativePG up, the migration and seed Jobs completed, three replicas stopped at their first Google step with exit 1 and no setting, database or schema error; `/readyz`, P11 and acceptance 3 are reported **not measured**. Whether to accept this reading of the acceptance item is a human's decision.
+
+Each task's Verify line:
+
+- [x] T1: images build reproducibly. Proof: the hub `image` job passed on GitHub at `62d23dc` (it builds twice and requires one digest); for both images `just images-repro` ran at an earlier head, and no Dockerfile changed in this round.
+- [x] T1: a CycloneDX SBOM and a scan that fails on critical findings (`scan-test` passed on GitHub at `62d23dc`; the planted CVE-2021-44228 fails the scan, earlier head).
+- [x] T2: `actionlint` passes (run here: `just ci-lint`), and a test fails if any action reference is not a SHA (`check-pins.test.mjs`, in the 205).
+- [x] T3: kubeconform passes and the policy tests reject a pod missing any hardening field (run here: `render.sh render` and `policy` for the hub chart in kind, staging and prod; 1349 policy tests).
+- [x] T4: kubeconform passes and the Role has no Secret list (run here: `render.sh contract`).
+- [ ] T5: db and gcp charts. **PARTIAL (B5).** The db chart and `gcp-storage` (everything but Cloud Armor) pass `render.sh data`; the gcp chart with Cloud Armor cannot render.
+- [ ] T6: every values file through conftest. **PARTIAL (B5).** Everything but the gcp chart with staging and prod values.
+- [x] T7: the threat-model section. Rewritten in places in this round (rows for the Jobs, the keys and secrets, the temporary `ca-init` identity, the config-server rule, the agent's audience, the withheld settings and the pod-fit guards; residuals 29 to 36 added, and 3, 5, 7, 10, 11, 13, 20 and 23 corrected). Every `file::test` it names was checked to exist by hand; no test reads this section.
+- [ ] T8: the RPM installs and starts on Rocky 8.9 and 8.10. **PARTIAL (B13).** Both Rocky installs passed on GitHub at `62d23dc`; the real `audit` package path and the release key do not exist yet.
+- [x] T8: `systemd-analyze security` exposure score 2.0 or lower (1.7, earlier head; the sentinel jobs passed on GitHub at `62d23dc`).
+- [ ] T8: the RPM's signature verifies. **PARTIAL (B13).** With a throwaway key; the release key does not exist.
+
+## Security requirements implemented
+
+S5 (two CA keys that cannot be one, `signerVerifier` per key, the agent's audience equal to the hub's, the `ca-init` identity per key), S6 (TLS 1.3 and Postgres verify-full; the Jobs' network), S7 (no Kubernetes Secret but the agent's empty one; the migrator's Secret for the migration Job alone; no value in a Secret Manager container's spec or metadata; `envFrom` and `secretKeyRef` refused), S8 (the vault key and its single role), S9 (the audit checkpoint key and bucket; the seed record kept; no operator in the seed's audit event is a residual), S10 (customer-managed keys, the Secret Manager containers' encryption), S16 (hardening of every pod, the Jobs included), S17 (the agent's Role, exact egress, the config-server's namespace), S18 (default deny, the Jobs' policy, no second policy), S19 and S20 (pinned actions and images, SBOM, signing, Binary Authorization in dry run), S21 (the Jobs' contract, the withheld settings). The tests, by name, are in the rows of the deployment section of `docs/threat-model.md`.
+
+## Benchmarks against budgets
+
+**Not re-run in this round, on purpose.** The 09/fix commits of round 1 change `deploy/`, `docs/`, `plans/`, `.github/workflows/` and one comment in `crates/hub/tests/hardening.rs`: no crate source, no benchmark, no `perf/` file. The earlier misses (B15: `P6.index_settings` and `P12.audit_record`) are, as reported by the orchestrator and not checked here, settled by PR 34 on `main`. The only P# of this prompt, P11, is asserted per replica by the kind job and reads **NOT MEASURED** (the replicas stop at their first Google step). The benchmark tables of earlier heads are in the history below and are not claims about this head.
+
+## New dependencies
+
+None in this round. `git diff 7ff2d6c..HEAD --stat` touches no `Cargo.toml`, `Cargo.lock`, `package.json`, `pnpm-lock.yaml`, `deny.toml`, `Justfile`, tool pin or image digest. The tools, images and schemas of the whole branch are in the table of the history below (with ages as of 2026-10-26).
+
+## Assumptions
+
+- **The seed Job and its ConfigMap are kept (`Prune=false`) and old ones accumulate by design.** Argo CD's reading of the annotation is **not verified** (its documentation was not reachable); it may show the Application as `OutOfSync` while an old Job exists.
+- **The start timeout is capped at 8 s** because the hub serves `/healthz` only when its whole start has finished and the start is six steps in a row, each bounded by it (read from `crates/hub/src/process.rs`; the number is a constant in `_helpers.tpl`). A larger bound needs a wider probe window, which is a change of the contract.
+- **The caches may exceed their defaults (512 and 256 MiB) by at most the limit's headroom over the request.** This assumes that the P11 figure (1536 MiB) was measured with the default caches; **not verified**.
+- **HSM in prod** is the implementation's reading of S5, enforced by `kms.rego`. It is not a recorded decision, and `docs/decisions.md` was not touched.
+- **The `ca-init` pods' `--overrides`** (non-root, read-only root, no capabilities, `RuntimeDefault`, no token) are from memory and **not verified** against `kubectl run`.
+- **The webhook secret is read into a file with `umask 077` and shredded**, which may not remove it on a journaled file system or an SSD; the guide says so.
+- The earlier assumptions of the plan (A1 to A32) are in the history below. A1 (composing the hub) was resolved by prompt 18, not by this prompt.
+
+## Deviations from the plan
+
+The plan is frozen and was not edited. The deviations of earlier rounds are in `plans/09-deployment-ci.blockers.md` and the history below. In this round: `crates/hub/HARDENING.md` and `crates/hub/tests/hardening.rs` were edited, which the plan's Extra-paths allow; the deployment section of `docs/threat-model.md` was edited, which the prompt owns; nothing under `docs/` else, `proto/`, `perf/budgets.toml` or any other crate was touched.
+
+---
+
+# History before the merge of prompt 18 (superseded wherever it disagrees with the part above)
+
+**What follows is the evidence file as it stood at `5931895`, kept for the record.** It says that the hub binary exits 1 (A1), that the kind job is red by design, that no workflow has run on GitHub and that the gate counts are 1021 and 34; none of that is true any more. Its benchmark tables and tool ages are those of 2026-10-26.
+
 Written by the implementer in the FINAL step. Real output only; nothing is ticked that was not proved by output shown here. Where an item is not ticked, the blocker id is next to it.
 
 **Status of this file: PARTIAL (updated in the cleanup after review round 3).** Every `PENDING` is resolved with real output. **`just verify` passed as one command on 2026-10-26 (exit 0, 80 min, ended 13:47:55 UTC, on `3a67982`), against the advisory database of that moment (1355 advisories). That no longer reproduces: with the database at 1378 advisories, `cargo deny check` and `cargo audit` exit 1 on four zstd advisories (B17, below), so `just verify` is not green today. `Cargo.lock`, `Cargo.toml` and `deny.toml` on this branch are identical to `origin/main`, so main fails the same way, and the decision is a human's (see B17).** B14 was resolved by PR 30; B17 is new. **It stays PARTIAL because other things still need a human or a machine this sandbox does not have:** `just verify-09` fails at `deploy-render` (B5, and nothing else); `cargo xtask bench-check` exits 1 (B15: two real budget misses in crates 09 does not own, and four web budgets that need a browser; not re-run in round 2); A1 stays open; the kind test has run on GitHub twice: on the second CI run it failed in its registry stage (B21, fixed in `743337d`), and on the third (head `13dd92e`) the stages `registry`, `cluster`, `hub image`, `operator`, `database` and `s6` passed on a runner and the `hub` stage failed on A1 as predicted but with a wrong verdict text, from a log-collection race (B22, fixed in `fc34383`, not run again); the hub stage past A1, and P11, are unproven; the workflows have run three times on GitHub (sections "CI first run" and, inside it, "Second run" and "Third run"). **Review round 1 (`plans/09-deployment-ci.review.md`) was answered in a FIX step, commits `643a896` to `df624a6`, and review round 2 (CHANGES REQUESTED, `33d6cf3`) in a second FIX step, commits `077e32e` to `3a67982`: see "Review round 1" and "Review round 2" below.** Round 2 found that the `sign-release` job did compile the sentinel (through `build.sh --tools`); that is fixed by a stage of its own, with a test on BuildKit's own plan. No acceptance item was ticked on the strength of the new runs.
