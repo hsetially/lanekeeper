@@ -9,6 +9,9 @@ ignoredBuiltDependencies:
 # esm/vs/base/browser/dompurify/, which this override cannot change; src/editor never reaches it (see docs/threat-model.md).
 # undici reaches web/ twice, 7.29.1 (pinned exactly by @scalar/json-magic, under orval) and 7.30.0 (jsdom, under vitest). The undici findings
 # that osv-scanner reports (B19, osv-scanner.toml) are fixed in 7.30.1, published on 2026-10-15 and 14 days old on 2026-10-29.
+# zod 4 reaches web/ through orval (@orval/zod, @scalar/types) and eslint-plugin-react-hooks, all devDependencies. The zod finding of B19 is
+# fixed in 4.6.6, published on 2026-10-11. zod 3.25.76 is pinned exactly by chromium-bidi (under lighthouse) and is left alone.
 overrides:
   dompurify: 3.4.17
   undici: 7.30.1
+  zod@^4: 4.6.6
