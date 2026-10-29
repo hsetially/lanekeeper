@@ -1,0 +1,14 @@
+# A reference after a matrix block is checked again: the matrix exception ends with the block.
+name: bad-after-matrix
+on: [push]
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: [hub, agent]
+    services:
+      db:
+        image: postgres:16
+    steps:
+      - run: true

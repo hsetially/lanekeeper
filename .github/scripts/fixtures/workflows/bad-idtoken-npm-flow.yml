@@ -1,0 +1,13 @@
+name: bad-idtoken-npm-flow
+on:
+  push:
+    branches: [main]
+permissions: {}
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: { contents: read, id-token: write }
+    steps:
+      - run: npm ci
+      - run: echo done

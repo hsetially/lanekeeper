@@ -34,8 +34,10 @@ web-verify:
 lk-test:
     node --test scripts/lk.test.mjs
 
+# The 44 bench targets of the workspace, as bench.yml and the nightly run them (`--bench '*'` leaves out the unit-test harnesses of the libs and
+# bins, which reject criterion's options, and `--no-fail-fast` runs every target). `just bench && cargo xtask bench-check`.
 bench:
-    cargo bench --workspace
+    cargo bench --workspace --bench '*' --no-fail-fast
 
 # Fail early, with the install command, when the pinned nightly toolchain or cargo-fuzz is missing. Never skips.
 fuzz-tools-check:
@@ -790,8 +792,401 @@ verify-08: web-install web-gen-check
     just web-e2e
     just web-perf
     just web-bench-check
-verify-09:
-    @echo "verify-09 not implemented yet" && exit 1
+
+# Prompt 09, T1 (S16, S19, S20): the images. Every tool runs from a digest-pinned image (deploy/images/tools.env), so the
+# recipes need Docker, git, jq, node and python3, and fail at once without them, never skip.
+images-tools-check:
+    @docker info >/dev/null 2>&1 || { echo "the image recipes need a running Docker daemon with buildx"; exit 1; }
+    @docker buildx version >/dev/null 2>&1 || { echo "the image recipes need docker buildx"; exit 1; }
+    @for t in git jq node python3; do command -v "$t" >/dev/null 2>&1 || { echo "the image recipes need $t"; exit 1; }; done
+
+# One image as an OCI archive in target/images, from `git archive HEAD` (see deploy/images/build.sh for LK_BUILD_CA and
+# the other settings).
+images-build image: images-tools-check
+    deploy/images/build.sh {{image}}
+
+# The T1 Verify: each image built twice from the same commit without the cache gives one digest.
+images-repro: images-tools-check
+    deploy/images/reproducible-check.sh hub agent
+
+# The CycloneDX SBOM (image plus Rust crates) and the scan that fails on any critical finding, for an image already built.
+images-sbom image: images-tools-check
+    deploy/images/sbom.sh {{image}}
+
+images-scan image: images-tools-check
+    deploy/images/scan.sh {{image}}
+
+# The lock and Dockerfile policies: the model lock's checker and its planted cases, the Rego unit tests, the planted
+# Dockerfile through conftest's real parser (every expected rule must fire), both Dockerfiles, the crates' own Dockerfile
+# lints, the hub's model-stage script against planted locks, the database-image scan's refusals (a tag, a placeholder), and last the
+# committed lock (refused while UNRESOLVED).
+images-policy-test: images-tools-check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    . deploy/images/tools.env
+    conftest() { docker run --rm -v "$PWD:/repo:ro" -w /repo "$LK_CONFTEST_IMAGE" "$@"; }
+    node --test deploy/images/tests/*.test.mjs
+    conftest verify --policy deploy/policy --namespace dockerfile --no-color
+    planted="$(conftest test --parser dockerfile --policy deploy/policy --namespace dockerfile --no-color deploy/policy/testdata/dockerfile/planted.Dockerfile || true)"
+    while IFS= read -r rule; do
+        grep -qF -- "$rule" <<<"$planted" || { echo "images-policy-test: the planted Dockerfile did not trigger: $rule"; echo "$planted"; exit 1; }
+    done < deploy/policy/testdata/dockerfile/planted.expected
+    conftest test --parser dockerfile --policy deploy/policy --namespace dockerfile --no-color crates/hub/Dockerfile crates/agent/Dockerfile
+    cargo test -p hub --test hardening
+    cargo test -p agent --test hardening
+    deploy/images/tests/model-stage-test.sh
+    deploy/images/tests/build-args-test.sh
+    deploy/images/tests/scan-db-test.sh
+    node deploy/images/model-lock.mjs check deploy/images/hub-model.lock
+
+# The scan blocks a critical finding: a planted SBOM with CVE-2021-44228 must fail it (needs the grype database). And the tool containers
+# (grype, syft) work as an unprivileged user, the way a CI runner runs them, and say why when they fail (the first CI run's failures: both
+# tests step down from root first, deploy/tests/as-user.sh).
+images-scan-test: images-tools-check
+    deploy/images/tests/scan-test.sh
+    deploy/images/tests/container-user-test.sh
+
+# The database image (CloudNativePG's, not built by images.yml; 09/T6, plans/09-deployment-ci.blockers.md B9 and B10) scanned by the digest
+# that deploy/values/db deploys, with the grype setup of the images we build: any critical finding fails. The nightly job `db-image` runs it.
+# It pulls the image's layers, so it needs the registry (ghcr.io and the host that serves its layers) and the grype database.
+images-scan-db: images-tools-check
+    deploy/images/scan-db.sh
+
+# Prompt 09, T2 (S19, S20): the workflow and CI gates. The tools that run on the host are release files, pinned by version and by
+# the sha256 of the file (plan 09 A22). Each sha256 was computed from the bytes downloaded for the pinned version; for actionlint,
+# kubeconform, kind, osv-scanner, cosign, crane and helm it equals the one in the checksum file that the release publishes (zizmor
+# and shellcheck publish none, so theirs is the hash of the download alone). To move one: change the version, download the file
+# again, compare its sha256 with the release's checksum file if there is one, and put the value here. The one tool that runs as a
+# container (BuildKit) is pinned by digest in deploy/images/tools.env. Every version was released at least 14 days before it was
+# chosen (2026-10-25): actionlint 1.7.12 on 2026-03-31, kubeconform 0.8.0 on 2026-06-04, kind 0.33.0 on 2026-08-26, osv-scanner
+# 2.6.0 on 2026-09-14, zizmor 1.30.1 on 2026-09-09, cosign 3.1.3 on 2026-08-05, crane 0.22.1 on 2026-09-03, shellcheck 0.11.0 on
+# 2025-08-03, helm 4.3.0 on 2026-09-09 (4.3.1, tagged 2026-10-14, was 11 days old, so it waits; Helm 3 is in its security-only
+# window). helm's file comes from get.helm.sh (plans/09-deployment-ci.blockers.md, B4).
+ops_tools_bin := "target/ops-tools/bin"
+actionlint_version := "1.7.12"
+actionlint_sha256 := "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+kubeconform_version := "0.8.0"
+kubeconform_sha256 := "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883"
+kind_version := "0.33.0"
+kind_sha256 := "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d"
+osv_scanner_version := "2.6.0"
+osv_scanner_sha256 := "ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108"
+zizmor_version := "1.30.1"
+zizmor_sha256 := "e65324f4430c2717591937edcec90ccbefaf14c174f8ec9415e03ca875b46e1a"
+cosign_version := "3.1.3"
+cosign_sha256 := "4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71"
+crane_version := "0.22.1"
+crane_sha256 := "0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0"
+shellcheck_version := "0.11.0"
+shellcheck_sha256 := "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+helm_version := "4.3.0"
+helm_sha256 := "86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb"
+# Installed in CI by taiki-e/install-action (just) and `cargo install --locked` (sqlx-cli, which must match the sqlx in Cargo.toml).
+just_version := "1.40.0"
+sqlx_cli_version := "0.8.6"
+
+# Downloads the pinned release files into target/ops-tools/bin and refuses any file whose sha256 differs from the pin. Linux amd64
+# only: on another machine install the versions that ops-tools-check names. `just ops-tools-install actionlint zizmor` installs
+# only those (CI jobs install what they use); with no argument it installs every tool.
+ops-tools-install *tools:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ "$(uname -s)/$(uname -m)" = "Linux/x86_64" ] || { echo "ops-tools-install: the pinned release files are linux/amd64 builds; on this machine install the versions that 'just ops-tools-check' names"; exit 1; }
+    bin="$PWD/{{ops_tools_bin}}"
+    mkdir -p "$bin"
+    work="$(mktemp -d)"
+    trap 'rm -rf "$work"' EXIT
+    wanted=({{tools}})
+    # fetch NAME URL SHA256 [MEMBER]: MEMBER is the file to take out of an archive; without it the download is the binary.
+    fetch() {
+        local name="$1" url="$2" sha="$3" member="${4:-}"
+        if [ ${#wanted[@]} -gt 0 ] && [[ ! " ${wanted[*]} " == *" $name "* ]]; then return 0; fi
+        curl --fail --silent --show-error --location --retry 3 --max-time 300 --output "$work/$name.download" "$url"
+        local got
+        got="$(sha256sum "$work/$name.download" | cut -d' ' -f1)"
+        [ "$got" = "$sha" ] || { echo "ops-tools-install: $name from $url has sha256 $got, the pin is $sha"; exit 1; }
+        if [ -n "$member" ]; then
+            mkdir "$work/$name.x"
+            tar -xf "$work/$name.download" -C "$work/$name.x" "$member"
+            install -m 0755 "$work/$name.x/$member" "$bin/$name"
+        else
+            install -m 0755 "$work/$name.download" "$bin/$name"
+        fi
+        echo "ops-tools-install: $name installed"
+    }
+    fetch actionlint "https://github.com/rhysd/actionlint/releases/download/v{{actionlint_version}}/actionlint_{{actionlint_version}}_linux_amd64.tar.gz" "{{actionlint_sha256}}" actionlint
+    fetch kubeconform "https://github.com/yannh/kubeconform/releases/download/v{{kubeconform_version}}/kubeconform-linux-amd64.tar.gz" "{{kubeconform_sha256}}" kubeconform
+    fetch kind "https://github.com/kubernetes-sigs/kind/releases/download/v{{kind_version}}/kind-linux-amd64" "{{kind_sha256}}"
+    fetch osv-scanner "https://github.com/google/osv-scanner/releases/download/v{{osv_scanner_version}}/osv-scanner_linux_amd64" "{{osv_scanner_sha256}}"
+    fetch zizmor "https://github.com/zizmorcore/zizmor/releases/download/v{{zizmor_version}}/zizmor-x86_64-unknown-linux-gnu.tar.gz" "{{zizmor_sha256}}" zizmor
+    fetch cosign "https://github.com/sigstore/cosign/releases/download/v{{cosign_version}}/cosign-linux-amd64" "{{cosign_sha256}}"
+    fetch crane "https://github.com/google/go-containerregistry/releases/download/v{{crane_version}}/go-containerregistry_Linux_x86_64.tar.gz" "{{crane_sha256}}" crane
+    fetch shellcheck "https://github.com/koalaman/shellcheck/releases/download/v{{shellcheck_version}}/shellcheck-v{{shellcheck_version}}.linux.x86_64.tar.xz" "{{shellcheck_sha256}}" shellcheck-v{{shellcheck_version}}/shellcheck
+    fetch helm "https://get.helm.sh/helm-v{{helm_version}}-linux-amd64.tar.gz" "{{helm_sha256}}" linux-amd64/helm
+
+# Fails at once, with the fix, when a pinned tool is missing or has another version. Never skips. `just ops-tools-check actionlint
+# zizmor` checks only those (with none, every tool). A tool found on PATH counts when it reports the pinned version, so a developer's
+# own install is fine.
+ops-tools-check *tools:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PATH="$PWD/{{ops_tools_bin}}:$PATH"
+    fail=0
+    wanted=({{tools}})
+    need() { # NAME WANTED FOUND
+        if [ "$3" != "$2" ]; then echo "ops-tools-check: need $1 $2, found '${3:-nothing}'; run: just ops-tools-install $1"; fail=1; fi
+    }
+    want() { [ ${#wanted[@]} -eq 0 ] || [[ " ${wanted[*]} " == *" $1 "* ]]; }
+    want actionlint && need actionlint "{{actionlint_version}}" "$(actionlint -version 2>/dev/null | head -n1 || true)"
+    want kubeconform && need kubeconform "v{{kubeconform_version}}" "$(kubeconform -v 2>/dev/null || true)"
+    want kind && need kind "v{{kind_version}}" "$(kind version 2>/dev/null | awk '{print $2}' || true)"
+    want osv-scanner && need osv-scanner "{{osv_scanner_version}}" "$(osv-scanner --version 2>/dev/null | sed -n 's/^osv-scanner version: //p' || true)"
+    want zizmor && need zizmor "zizmor {{zizmor_version}}" "$(zizmor --version 2>/dev/null || true)"
+    want cosign && need cosign "{{cosign_version}}" "$(cosign version 2>/dev/null | sed -n 's/^GitVersion: *v\{0,1\}//p' || true)"
+    want crane && need crane "{{crane_version}}" "$(crane version 2>/dev/null | sed 's/^v//' || true)"
+    want shellcheck && need shellcheck "{{shellcheck_version}}" "$(shellcheck --version 2>/dev/null | sed -n 's/^version: //p' || true)"
+    want helm && need helm "v{{helm_version}}" "$(helm version --short 2>/dev/null | sed 's/+.*//' || true)"
+    for t in "${wanted[@]}"; do
+        case "$t" in actionlint | kubeconform | kind | osv-scanner | zizmor | cosign | crane | shellcheck | helm) ;; *) echo "ops-tools-check: unknown tool '$t'"; fail=1 ;; esac
+    done
+    node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' || { echo "ops-tools-check: the .github scripts need Node 22 or later"; fail=1; }
+    # Every image a script runs is pinned by digest (S19): a tag alone can be moved.
+    while IFS= read -r line; do
+        case "$line" in LK_*_IMAGE=*@sha256:????????????????????????????????????????????????????????????????) ;; LK_*_IMAGE=*) echo "ops-tools-check: not pinned by digest in deploy/images/tools.env: $line"; fail=1 ;; esac
+    done < deploy/images/tools.env
+    exit "$fail"
+
+# The workflow checks: actionlint (which runs the pinned shellcheck on every run: script), zizmor, the SHA-pin check, the structural
+# rules of check-workflows.mjs, and shellcheck on the shell scripts under deploy/ and .github/. zizmor's online audits (does a
+# pinned SHA belong to the action's repository? does the version comment match the SHA?) run with LK_ZIZMOR_ONLINE=1 and a GH_TOKEN,
+# as in CI; otherwise zizmor runs offline and says so.
+ci-lint: (ops-tools-check "actionlint zizmor shellcheck")
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PATH="$PWD/{{ops_tools_bin}}:$PATH"
+    actionlint
+    node .github/scripts/check-pins.mjs
+    node .github/scripts/check-workflows.mjs
+    zizmor_args=(--config .github/zizmor.yml --no-progress)
+    if [ "${LK_ZIZMOR_ONLINE:-}" != "1" ]; then zizmor_args+=(--offline); echo "ci-lint: zizmor runs offline and skips its online audits (CI sets LK_ZIZMOR_ONLINE=1 and GH_TOKEN)"; fi
+    zizmor "${zizmor_args[@]}" .github/workflows .github/actions
+    mapfile -t scripts < <(git ls-files --cached --others --exclude-standard -- 'deploy/*.sh' '.github/*.sh')
+    shellcheck -x "${scripts[@]}"
+    echo "ci-lint: ${#scripts[@]} shell scripts checked"
+
+# osv-scanner over every lockfile of the repository (S19): the workspace's Cargo.lock, the lockfiles of the fuzz crates, and the pnpm
+# lockfiles of the root and of web/. It asks api.osv.dev, so it needs the network; with the API unreachable osv-scanner fails
+# (exit 127), it never reports a clean run. The list comes from git, so a new fuzz crate is scanned without a change here.
+# osv-scanner.toml (B17) is passed with --config because osv-scanner otherwise reads a config file only beside the lockfile it scans, so
+# the fuzz crates' lockfiles would not see the root one. Its ignores are time-boxed and decided by a human; the npm findings have none.
+osv-scan: (ops-tools-check "osv-scanner")
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PATH="$PWD/{{ops_tools_bin}}:$PATH"
+    mapfile -t locks < <(git ls-files -- ':(glob)**/Cargo.lock' ':(glob)**/pnpm-lock.yaml')
+    for must in Cargo.lock pnpm-lock.yaml web/pnpm-lock.yaml; do
+        printf '%s\n' "${locks[@]}" | grep -qxF "$must" || { echo "osv-scan: $must is not among the tracked lockfiles"; exit 1; }
+    done
+    args=()
+    for f in "${locks[@]}"; do args+=(-L "$f"); done
+    [ -f osv-scanner.toml ] || { echo "osv-scan: osv-scanner.toml is missing"; exit 1; }
+    echo "osv-scan: ${#locks[@]} lockfiles"
+    osv-scanner scan source --config osv-scanner.toml "${args[@]}"
+
+# Every registered budget the Rust benchmarks produce, judged by `cargo xtask bench-check`. perf/budgets.toml also holds the P10 web
+# budgets, whose numbers come from the web-e2e workflow's `perf` job (web-bench-check), so a registry without them is cut here, the
+# way the per-prompt bench recipes cut theirs. A registered budget without a result still fails.
+bench-check-rust:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    # One entry runs from its [[budget]] line to the next one (a few are preceded by comment lines without a blank line).
+    awk 'function flush() { if (buf != "" && buf !~ /\nbench = "web\//) printf "%s\n\n", buf; buf = "" } /^\[\[budget\]\]/ { flush(); buf = $0; next } buf != "" { buf = buf "\n" $0 } END { flush() }' perf/budgets.toml > "$tmp/budgets.toml"
+    total="$(grep -c '^\[\[budget\]\]' perf/budgets.toml)"
+    kept="$(grep -c '^\[\[budget\]\]' "$tmp/budgets.toml")"
+    web="$(grep -c '^bench = "web/' perf/budgets.toml)"
+    if [ "$((kept + web))" -ne "$total" ]; then echo "bench-check-rust: kept $kept and cut $web of $total budgets"; exit 1; fi
+    echo "bench-check-rust: $kept of $total budgets ($web web budgets are judged by web-bench-check)"
+    cargo xtask bench-check --budgets "$tmp/budgets.toml"
+
+# S19: the SHA-pin check, the workflow rules and the Renovate settings, each against planted violations as well as the real files.
+pins-test:
+    node --test .github/scripts/*.test.mjs
+
+# The pinned BuildKit (deploy/images/builder.sh) starts, reports the pinned version, and builds the same OCI archive twice.
+images-builder-test: images-tools-check
+    deploy/images/tests/builder-test.sh
+
+# deploy/images/publish.sh against a registry on localhost: the digest that is pushed is the digest that was built, and a signature,
+# an SBOM attestation and their verification work with a throwaway key. Keyless signing needs GitHub's OIDC and runs in CI only.
+images-publish-test: images-tools-check (ops-tools-check "cosign crane")
+    deploy/images/tests/publish-test.sh
+
+# Prompt 09, T3 (D62, S6, S7, S10, S16, S18, P11): the charts. deploy/tests/render.sh renders every chart with every values file and
+# runs helm lint, kubeconform and the policies on the result; the recipes below are its parts and the tests of its tools.
+
+# The vendored schemas equal their lock, and the converter that makes them passes its tests.
+schemas-verify:
+    python3 -B -I -m unittest discover -s deploy/schemas -p 'test_*.py'
+    node --test deploy/schemas/verify.test.mjs
+    node deploy/schemas/verify.mjs
+
+# helm lint --strict of every chart with every values file.
+deploy-lint: (ops-tools-check "helm")
+    deploy/tests/render.sh lint
+
+# helm template | kubeconform -strict, offline: a field or a kind without a vendored schema is an error, never a skip. The Argo CD files
+# (deploy/argocd) go through kubeconform too.
+deploy-render: schemas-verify (ops-tools-check "helm kubeconform")
+    deploy/tests/render.sh render
+
+# The unit tests of the Rego policies: every rule has a planted case that it must refuse.
+policy-test: images-tools-check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    . deploy/images/tools.env
+    docker run --rm -v "$PWD:/repo:ro" -w /repo "$LK_CONFTEST_IMAGE" verify --policy deploy/policy --no-color
+
+# The policies on the real output of every chart. In prod and staging a warning fails; in kind the fallbacks it allows are printed
+# (and Binary Authorization's dry run, and a placeholder revision, are printed everywhere: plan 09 A5, A29). The Argo CD files (09/T6): the
+# argocd policy on each cluster's files, the files they name, and the scope of each project against the charts it deploys.
+policy-check: (ops-tools-check "helm") images-tools-check
+    deploy/tests/render.sh policy
+
+# The checks refuse planted violations, each for its own reason: kubeconform, the templates, and the policies on the real output
+# (the Argo CD files and the admission policy included).
+deploy-planted: (ops-tools-check "helm kubeconform") images-tools-check
+    deploy/tests/render.sh planted
+
+# The agent chart's rendered Roles, NetworkPolicy and pod against the contract files of the agent's owner: crates/agent/RBAC.md and
+# crates/agent/HARDENING.md. The YAML blocks of the two files are extracted (and the extraction is shown to refuse a file it cannot
+# read), then deploy/policy/contract.rego compares them with the real output of the chart (09/T4; S16, S17).
+contract-check: (ops-tools-check "helm") images-tools-check
+    deploy/tests/contract-extract.sh --self-test
+    deploy/tests/render.sh contract
+
+# The charts name only variables that the binaries read (crates/hub/src/config.rs and config/*.rs, crates/agent/src/config.rs), and the tool that
+# finds them is shown to refuse a typo.
+env-names-test:
+    deploy/tests/env-names.sh --self-test
+    deploy/tests/env-names.sh
+
+# The tool that writes GitHub's webhook ranges passes its tests, which use a synthetic /meta document.
+tools-test:
+    node --test deploy/tools/*.test.mjs
+
+# The install guide (deploy/INSTALL-GKE.md) says what the repository says: every path, `just` recipe, setting, secret and chart value it
+# names exists, its steps are numbered, its gcloud blocks say they are not verified, and nothing in it looks like a real secret, project or
+# host. The checker is shown to catch each kind of drift. No Docker and no network.
+# The install guide names only what exists and holds nothing real.
+install-guide-test:
+    node --test .github/scripts/install-guide.test.mjs
+
+# Everything that checks the charts and the Argo CD files (what the deploy workflow runs): schemas, lint, kubeconform, the policies and
+# their planted cases, and the install guide that names them.
+deploy-check: schemas-verify deploy-lint deploy-render policy-test policy-check contract-check deploy-planted env-names-test tools-test install-guide-test
+
+# The data layer of 09/T5 alone: the db chart, and the gcp chart's buckets, keys, IAM and admission policy (09/T6) rendered without
+# Cloud Armor, through lint, kubeconform -strict, the policies, their planted violations and the check that the db, gcp and hub charts name
+# the same things. It is a SUBSET of deploy-check, for the part that does not wait for GitHub's hook ranges
+# (plans/09-deployment-ci.blockers.md, B5): the gcp chart with Cloud Armor still refuses to render until a person runs
+# deploy/tools/github-hook-ranges.mjs, and deploy-check says so.
+deploy-data: schemas-verify policy-test (ops-tools-check "helm kubeconform") images-tools-check
+    deploy/tests/render.sh data
+
+# The Argo CD files of 09/T6 alone: kubeconform, the argocd policy, the files each Application names, the scope of each project against the
+# charts it deploys, and their planted violations. A SUBSET of deploy-check, for the part that does not wait for GitHub's hook ranges (B5):
+# the scope of the gcp chart with Cloud Armor is left out of it, and deploy-check checks it. It is never the gate.
+deploy-argocd: schemas-verify policy-test (ops-tools-check "helm kubeconform") images-tools-check
+    deploy/tests/render.sh argocd
+
+# The kind end-to-end test (09 acceptance 3; D62, S6, S7, P11): the hub chart with CloudNativePG on a kind cluster of one control plane
+# and three workers, from the hub image of target/images (`just images-build hub` makes it; CI downloads the one the image job scanned).
+# It checks that `psql sslmode=disable` is rejected and that the database speaks TLS 1.3 only (S6); that the migration Job and the seed Job
+# complete against CloudNativePG; and that each replica of the PRODUCTION image stops at its first Google step (exit 1, no setting, database
+# or schema error in its log). It does NOT measure /readyz on three replicas or P11: that image cannot be Ready without real Google and Entra,
+# and kind has neither, so acceptance 3 is not met by this job and its summary says so. Needs Docker on a cgroup v2 host and the network
+# (Docker Hub, ghcr.io, github.com). Like images-repro and sentinel-test it is not part of verify-09, fails without Docker, and is never
+# skipped. CI runs it as the kind-e2e job of images.yml.
+kind-e2e: images-tools-check (ops-tools-check "kind helm crane")
+    deploy/tests/kind/run.sh
+
+# The registry stages of the kind test (deploy/tests/kind/run.sh --registry-only) against a real registry container, crane and Docker, with
+# no cluster: the registry is started and waited for, a tiny image is pushed under its recorded digest to 127.0.0.1, a wrong archive is
+# refused with the registry's state printed, and the helpers that read a container (lib.sh) work on a real one. It is what showed the first
+# CI run's `hub image` failure to be a stage with no wait at the point of use and no word about the container. Part of verify-09.
+kind-registry-test: images-tools-check (ops-tools-check "crane")
+    deploy/tests/kind/registry-test.sh
+
+# Prompt 09, T8 (S19, S20, S25, plan 09 A15 to A18): the sentinel's RPM. `sentinel-check` is what needs no RPM and no key, and is part of
+# verify-09: the parser of the unit file and its tests, the policy on the unit (S25), the policy on Dockerfile.build and its planted cases
+# through the real Dockerfile parser, and the self-tests of the signing and install scripts' helpers. The recipes below it build, sign and
+# test the package, need Docker (and, for the RPM install, a privileged container that boots systemd), and are separate from verify-09 like
+# images-repro: they fail without Docker and are never skipped. CI runs them in .github/workflows/sentinel.yml.
+sentinel-check: images-tools-check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    . deploy/images/tools.env
+    conftest() { docker run --rm -v "$PWD:/repo:ro" -w /repo "$LK_CONFTEST_IMAGE" "$@"; }
+    node --test deploy/sentinel/tests/*.test.mjs
+    conftest verify --policy deploy/policy --namespace systemd --namespace dockerfile_artifact --no-color
+    work="$(mktemp -d)"
+    trap 'rm -rf "$work"' EXIT
+    node deploy/sentinel/tests/unit2json.mjs deploy/sentinel/lanekeeper-sentinel.service > "$work/unit.json"
+    docker run --rm -v "$PWD:/repo:ro" -v "$work:/work:ro" -w /repo "$LK_CONFTEST_IMAGE" test --policy deploy/policy --namespace systemd --no-color /work/unit.json
+    conftest test --parser dockerfile --policy deploy/policy --namespace dockerfile_artifact --no-color deploy/sentinel/Dockerfile.build
+    planted="$(conftest test --parser dockerfile --policy deploy/policy --namespace dockerfile_artifact --no-color deploy/policy/testdata/dockerfile/planted-artifact.Dockerfile || true)"
+    while IFS= read -r rule; do
+        grep -qF -- "$rule" <<<"$planted" || { echo "sentinel-check: the planted Dockerfile did not trigger: $rule"; echo "$planted"; exit 1; }
+    done < deploy/policy/testdata/dockerfile/planted-artifact.expected
+    # A unit that breaks S25 is refused through the real parser too: the converter and the policy agree on the shape.
+    sed 's/^CapabilityBoundingSet=$/CapabilityBoundingSet=CAP_SYS_ADMIN/' deploy/sentinel/lanekeeper-sentinel.service > "$work/bad.service"
+    node deploy/sentinel/tests/unit2json.mjs "$work/bad.service" > "$work/bad.json"
+    if docker run --rm -v "$PWD:/repo:ro" -v "$work:/work:ro" -w /repo "$LK_CONFTEST_IMAGE" test --policy deploy/policy --namespace systemd --no-color /work/bad.json > "$work/bad.out" 2>&1; then
+        echo "sentinel-check: a unit with a capability was accepted"; exit 1
+    fi
+    grep -qF "CapabilityBoundingSet= must be set and empty" "$work/bad.out" || { echo "sentinel-check: refused, but not for the capability"; cat "$work/bad.out"; exit 1; }
+    echo "sentinel-check: the unit passes the S25 policy, Dockerfile.build passes its policy, and the planted cases are refused"
+
+# BuildKit's own plan of the target that the signing job builds (`build.sh --tools`, the stage `rpm-tools`): every step it would run must be a step
+# of that stage, none of the `binary` stage (cargo and the build scripts of every crate). Needs Docker and the pinned base images, so it is
+# not part of verify-09 (a refused registry answers "inconclusive", never a pass); CI runs it in the `policy` job of sentinel.yml, and the
+# static form of the same rule (dockerfile_artifact.rego) is part of sentinel-check. See deploy/sentinel/tests/tools-graph.sh.
+sentinel-tools-graph:
+    deploy/sentinel/tests/tools-graph.sh rpm-tools
+
+# The sentinel binary and the unsigned RPM in target/sentinel/unsigned, from `git archive HEAD`, and the image with the tools that sign (see
+# deploy/sentinel/build.sh for LK_BUILD_CA and the other settings).
+sentinel-build: images-tools-check
+    deploy/sentinel/build.sh --out target/sentinel/unsigned
+    deploy/sentinel/build.sh --tools
+
+# Two builds of one commit give one binary and one RPM (the reproducibility of T8, as images-repro is for T1).
+sentinel-repro: images-tools-check
+    deploy/sentinel/tests/reproducible.sh
+
+# The RPM signed with a throwaway key (a pull request's), with its CycloneDX SBOM scanned for critical findings (needs cargo-cyclonedx,
+# and the vulnerability database from grype.anchore.io).
+sentinel-sign: sentinel-build
+    deploy/sentinel/tests/sign-test.sh --rpm target/sentinel/unsigned/lanekeeper-sentinel-*-1.x86_64.rpm
+    rm -rf target/sentinel/signed
+    deploy/sentinel/sign.sh ephemeral --rpm target/sentinel/unsigned/lanekeeper-sentinel-*-1.x86_64.rpm --out target/sentinel/signed
+    deploy/sentinel/sbom.sh --rpm target/sentinel/signed/lanekeeper-sentinel-*-1.x86_64.rpm
+    deploy/images/scan.sh --sbom target/sentinel/signed/lanekeeper-sentinel-*-1.x86_64.cdx.json
+
+# The T8 Verify: the RPM installs and starts on Rocky Linux 8.9 and 8.10, its signature verifies, and the unit's exposure score is 2.0 or
+# lower by directives that systemd 239 knows. LK_SENTINEL_AUDIT is `repo` (the real audit package, from the Rocky repositories: what CI
+# does and the default) or `stand-in` (tests/audit-stand-in.spec, for a place that cannot reach them; the test says so loudly).
+sentinel-test: sentinel-sign (ops-tools-check "cosign")
+    deploy/sentinel/tests/install.sh --rpm target/sentinel/signed/lanekeeper-sentinel-*-1.x86_64.rpm --unsigned target/sentinel/unsigned/lanekeeper-sentinel-*-1.x86_64.rpm --public-key target/sentinel/signed/RPM-GPG-KEY-ephemeral.pub --audit "${LK_SENTINEL_AUDIT:-repo}"
+    deploy/sentinel/tests/exposure.sh --rpm target/sentinel/signed/lanekeeper-sentinel-*-1.x86_64.rpm
+    deploy/sentinel/tests/exposure.sh --self-test
+    deploy/sentinel/tests/publish-test.sh
+
+# The T8 gate so far (T7 and T8 add to it): the pinned tools, the workflow lint, the pin tests, the image checks, the charts with the Argo CD
+# files, and the sentinel's unit and Dockerfile policies. The RPM itself is `just sentinel-test`, with Docker, as images-repro is for T1.
+verify-09: ops-tools-check ci-lint pins-test images-policy-test images-builder-test images-publish-test kind-registry-test deploy-check sentinel-check
 verify-11:
     @echo "verify-11 not implemented yet" && exit 1
 verify-14:

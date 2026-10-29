@@ -35,6 +35,40 @@ fn is_digest_pinned(reference: &str) -> bool {
     })
 }
 
+/// The instructions of a Dockerfile, with `\` continuation lines joined (comments and blank lines already removed).
+fn instructions(lines: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for line in lines {
+        if let Some(head) = line.strip_suffix('\\') {
+            current.push_str(head.trim_end());
+            current.push(' ');
+        } else {
+            current.push_str(line);
+            out.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+/// The Debian release of a base image, as a number: `rust:1.88.0-trixie` and `gcr.io/distroless/cc-debian13` are both 13.
+/// The binary is linked against the builder's glibc and runs on the runtime image's, so the two must be the same release
+/// (09/T1; a base that Debian no longer fixes, such as `cc-debian12`, is moved on both sides together).
+fn debian_release(reference: &str) -> Option<u32> {
+    if let Some((_, rest)) = reference.split_once("/cc-debian") {
+        return rest.split(':').next()?.parse().ok();
+    }
+    let tag = reference.split_once("rust:")?.1.split('@').next()?;
+    match tag.rsplit('-').next()? {
+        "bookworm" => Some(12),
+        "trixie" => Some(13),
+        _ => None,
+    }
+}
+
 /// Why a Dockerfile does not meet S16. Empty when it does.
 fn dockerfile_problems(text: &str) -> Vec<String> {
     let mut problems = Vec::new();
@@ -59,6 +93,16 @@ fn dockerfile_problems(text: &str) -> Vec<String> {
             problems.push(format!("base image not pinned by digest: {}", lines[at]));
         }
     }
+    let release = debian_release(lines[last].split_whitespace().nth(1).unwrap_or(""));
+    for &at in &froms {
+        let reference = lines[at].split_whitespace().nth(1).unwrap_or("");
+        if reference.contains("/rust:") && (release.is_none() || debian_release(reference) != release) {
+            problems.push(format!(
+                "the builder and the runtime image are not the same Debian release: {}",
+                lines[at]
+            ));
+        }
+    }
     let final_base = lines[last].split_whitespace().nth(1).unwrap_or("");
     if !final_base.starts_with("gcr.io/distroless/") {
         problems.push(format!("the final image is not distroless: {final_base}"));
@@ -80,7 +124,8 @@ fn dockerfile_problems(text: &str) -> Vec<String> {
             }
         }
     }
-    // Only two things reach the final image, and both come from a build stage: the binary and the web app.
+    // Only three things reach the final image, and each comes from a build stage: the binary, the web app and the
+    // embedding model that the model stage checked against deploy/images/hub-model.lock (09/T1).
     let mut copied = BTreeSet::new();
     for line in final_stage {
         match word(line).as_str() {
@@ -104,7 +149,7 @@ fn dockerfile_problems(text: &str) -> Vec<String> {
             _ => {}
         }
     }
-    let expected: BTreeSet<String> = ["/usr/local/bin/hub", "/app/web/dist"]
+    let expected: BTreeSet<String> = ["/usr/local/bin/hub", "/app/web/dist", "/app/models"]
         .iter()
         .map(|s| (*s).to_owned())
         .collect();
@@ -136,6 +181,15 @@ fn dockerfile_problems(text: &str) -> Vec<String> {
     {
         problems.push("the web build must install with `pnpm install --frozen-lockfile`".to_owned());
     }
+    // The model files come only from the lock: a build stage reads deploy/images/hub-model.lock, and every file it fetches
+    // is checked against the lock's sha256 before the final image can copy it (09/T1, S19).
+    let model_stage_checks = instructions(&lines[..last])
+        .iter()
+        .any(|i| i.starts_with("RUN ") && i.contains("hub-model.lock") && i.contains("sha256sum -c"));
+    if !model_stage_checks {
+        problems
+            .push("the model stage must verify every file against deploy/images/hub-model.lock".to_owned());
+    }
     problems
 }
 
@@ -144,11 +198,22 @@ fn hub_dockerfile_is_hardened() {
     let text = read("Dockerfile");
     let problems = dockerfile_problems(&text);
     assert!(problems.is_empty(), "{problems:#?}");
+    // Debian 13 throughout: `cc-debian12` is deprecated and carries critical findings that will not be fixed (plan 09 A32).
     assert!(
-        text.contains("rust:1.88.0-bookworm@sha256:"),
+        text.contains("rust:1.88.0-trixie@sha256:"),
         "the builder is the toolchain in rust-toolchain.toml"
     );
-    assert!(text.contains("gcr.io/distroless/cc-debian12:nonroot@sha256:"));
+    assert!(text.contains("gcr.io/distroless/cc-debian13:nonroot@sha256:"));
+    let code: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect();
+    assert!(
+        !code
+            .iter()
+            .any(|l| l.contains("bookworm") || l.contains("cc-debian12")),
+        "no Debian 12 image is left"
+    );
     assert!(
         text.contains("node:22"),
         "the web stage uses the Node major of web/.nvmrc"
@@ -163,6 +228,14 @@ fn hub_dockerfile_is_hardened() {
     for must in [".git", "target", "node_modules"] {
         assert!(ignore.lines().any(|l| l == must), "{must} is not ignored");
     }
+    // deploy/ stays out of the build context except the model lock, which the model stage reads (09/T1).
+    assert!(ignore.lines().any(|l| l == "deploy"), "deploy is not ignored");
+    assert!(
+        ignore.lines().any(|l| l == "!deploy/images/hub-model.lock"),
+        "the model lock is not in the build context"
+    );
+    // The model's files land under /app/models/<name>/, the directory the hub's embedding code is pointed at.
+    assert!(text.contains("COPY --from=model /models /app/models\n"));
 }
 
 #[test]
@@ -179,10 +252,16 @@ fn hardening_lint_rejects_planted_dockerfile_violations() {
     let planted = [
         good.replace(&format!("@sha256:{digest}"), ""),
         good.replace(
-            "gcr.io/distroless/cc-debian12:nonroot",
-            "gcr.io/distroless/cc-debian12:debug-nonroot",
+            "gcr.io/distroless/cc-debian13:nonroot",
+            "gcr.io/distroless/cc-debian13:debug-nonroot",
         ),
-        good.replace("gcr.io/distroless/cc-debian12:nonroot", "debian:12-slim"),
+        good.replace("gcr.io/distroless/cc-debian13:nonroot", "debian:13-slim"),
+        // The runtime moves to another Debian release than the builder, or the builder does.
+        good.replace(
+            "gcr.io/distroless/cc-debian13:nonroot",
+            "gcr.io/distroless/cc-debian12:nonroot",
+        ),
+        good.replace("rust:1.88.0-trixie@", "rust:1.88.0-bookworm@"),
         good.lines()
             .filter(|l| !l.starts_with("USER "))
             .collect::<Vec<_>>()
@@ -200,6 +279,10 @@ fn hardening_lint_rejects_planted_dockerfile_violations() {
         format!("{good}\nCOPY . /app\n"),
         good.replace("COPY --from=web /src/web/dist /app/web/dist\n", ""),
         format!("{good}\nCOPY --from=build /src/.env /app/.env\n"),
+        // 09/T1: the model comes from the checked model stage, never straight from the build context, and never unchecked.
+        format!("{good}\nCOPY deploy/images/models /app/models\n"),
+        good.replace("COPY --from=model /models /app/models\n", ""),
+        good.replace("sha256sum -c", "sha256sum"),
     ];
     for (n, bad) in planted.iter().enumerate() {
         assert!(
@@ -392,6 +475,13 @@ fn container_problems(container: &Value) -> Vec<String> {
             problems.push(format!("resources.{section}.{field} is not set"));
         }
     }
+    // The startup probe asks /healthz, which answers only when the whole start has finished and then asks nothing of the database,
+    // so a database outage after the start never fails it and the liveness probe never judges a slow start (P11; plan 09 T3).
+    if container["startupProbe"]["httpGet"]["path"] != "/healthz"
+        || container["startupProbe"]["httpGet"]["port"] != "ops"
+    {
+        problems.push("the startup probe must be /healthz on the ops port".to_owned());
+    }
     if container["livenessProbe"]["httpGet"]["path"] != "/healthz"
         || container["readinessProbe"]["httpGet"]["path"] != "/readyz"
         || container["livenessProbe"]["httpGet"]["port"] != "ops"
@@ -491,6 +581,26 @@ fn volume_problems(spec: &Value, container: &Value) -> Vec<String> {
             problems.push(format!("{variable} is not a file inside the {volume} mount"));
         }
     }
+    // Each Secret reaches the pod through one key. CloudNativePG's CA Secret also holds ca.key, which signs server certificates
+    // (plan 09 A9), and the credentials Secret holds the user name and password besides the connection URL (S7).
+    for (volume, key) in [("db-ca", "ca.crt"), ("db-credentials", "uri")] {
+        let keys: Vec<String> = volumes
+            .iter()
+            .find(|v| v["name"] == volume)
+            .and_then(|v| v["secret"]["items"].as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|i| i["key"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if keys != [key] {
+            problems.push(format!(
+                "{volume} must mount only the {key} key of its Secret (items), found {keys:?}"
+            ));
+        }
+    }
     // A Secret that holds a password is readable by the group only (mode 0440).
     let credentials = volumes.iter().find(|v| v["name"] == "db-credentials");
     if credentials.is_none_or(|v| v["secret"]["defaultMode"].as_u64().is_none_or(|m| m & 0o007 != 0)) {
@@ -586,13 +696,20 @@ fn environment_problems(container: &Value) -> Vec<String> {
     problems
 }
 
-const EXPECTED_HOSTS: [&str; 7] = [
+/// Where the users' load balancer, its proxies and its health checks come from (plan 09 A10).
+const GOOGLE_RANGES: [&str; 2] = ["35.191.0.0/16", "130.211.0.0/22"];
+
+/// One name for each thing the hub's code calls outside the cluster. `storage.googleapis.com` is the audit-checkpoint writer's
+/// (`hub-identity/src/audit/bucket.rs`, `GcsCheckpointBucket::HOST`, S9): without it default deny blocks the second copy of the
+/// audit chain in the locked bucket. `deploy/policy/network.rego` (`required_hosts`) keeps the same list for the rendered chart.
+const EXPECTED_HOSTS: [&str; 8] = [
     "login.microsoftonline.com",
     "github.com",
     "api.github.com",
     "secretmanager.googleapis.com",
     "cloudkms.googleapis.com",
     "www.googleapis.com",
+    "storage.googleapis.com",
     "<teams webhook host>",
 ];
 
@@ -728,7 +845,7 @@ fn network_problems(docs: &[Value]) -> Vec<String> {
     }
     // Ingress: exactly the four listeners, each from its own callers.
     let ingress = policy["spec"]["ingress"].as_array().cloned().unwrap_or_default();
-    let mut by_port = std::collections::BTreeMap::new();
+    let mut by_port = BTreeSet::new();
     for rule in &ingress {
         let ports: Vec<u64> = rule["ports"]
             .as_array()
@@ -765,13 +882,26 @@ fn network_problems(docs: &[Value]) -> Vec<String> {
         } else {
             "other"
         };
-        by_port.insert(ports[0], caller);
+        // The operations port is for Prometheus and for the load balancer's health checks (plan 09 A10), which come from
+        // Google's two ranges and no others.
+        if ports[0] == 9090 && caller == "block" {
+            for d in &from {
+                let cidr = d["ipBlock"]["cidr"].as_str().unwrap_or("");
+                if !GOOGLE_RANGES.contains(&cidr) {
+                    problems.push(format!(
+                        "port 9090 admits {cidr}; from outside only the load balancer's health-check ranges {GOOGLE_RANGES:?}"
+                    ));
+                }
+            }
+        }
+        by_port.insert((ports[0], caller));
     }
-    let expected: std::collections::BTreeMap<u64, &str> = [
+    let expected: BTreeSet<(u64, &str)> = [
         (8443, "block"),
         (8444, "block"),
         (8445, "hub"),
         (9090, "monitoring"),
+        (9090, "block"),
     ]
     .into();
     if by_port != expected {
@@ -1211,6 +1341,54 @@ fn hardening_lint_rejects_planted_violations() {
                 d["spec"]["containers"].as_array_mut().unwrap().push(c);
             }),
         ),
+        (
+            "the whole CA Secret",
+            mutate("Pod", |d| {
+                d["spec"]["volumes"][3]["secret"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("items");
+            }),
+        ),
+        (
+            "the CA key as well as the certificate",
+            mutate("Pod", |d| {
+                d["spec"]["volumes"][3]["secret"]["items"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!({"key": "ca.key", "path": "ca.key"}))
+            }),
+        ),
+        (
+            "every key of the credentials Secret",
+            mutate("Pod", |d| {
+                d["spec"]["volumes"][2]["secret"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("items");
+            }),
+        ),
+        (
+            "the password key of the credentials Secret",
+            mutate("Pod", |d| {
+                d["spec"]["volumes"][2]["secret"]["items"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!({"key": "password", "path": "password"}))
+            }),
+        ),
+        (
+            "no startup probe",
+            mutate("Pod", |d| {
+                container(d).as_object_mut().unwrap().remove("startupProbe");
+            }),
+        ),
+        (
+            "a startup probe that depends on the database",
+            mutate("Pod", |d| {
+                container(d)["startupProbe"]["httpGet"]["path"] = "/readyz".into()
+            }),
+        ),
     ];
     for (label, docs) in &pod_cases {
         assert!(
@@ -1291,18 +1469,41 @@ fn hardening_lint_rejects_planted_violations() {
             }),
         ),
         (
-            "the audit checkpoints' storage host missing",
+            "the audit bucket host missing",
             mutate("FQDNNetworkPolicy", |d| {
-                d["spec"]["egress"][0]["matches"]
-                    .as_array_mut()
-                    .unwrap()
-                    .retain(|m| m["pattern"] != "storage.googleapis.com");
+                let matches = d["spec"]["egress"][0]["matches"].as_array_mut().unwrap();
+                let before = matches.len();
+                matches.retain(|m| m["pattern"] != "storage.googleapis.com");
+                assert_eq!(
+                    before - matches.len(),
+                    1,
+                    "the contract names storage.googleapis.com once"
+                );
             }),
         ),
         (
             "a non-HTTPS port",
             mutate("FQDNNetworkPolicy", |d| {
                 d["spec"]["egress"][0]["ports"][0]["port"] = Value::from(80)
+            }),
+        ),
+        (
+            "the operations port open to another block",
+            policy(|d| {
+                d["spec"]["ingress"][4]["from"] =
+                    serde_json::json!([{"ipBlock": {"cidr": "198.51.100.0/24"}}])
+            }),
+        ),
+        (
+            "the operations port open to the internet",
+            policy(|d| {
+                d["spec"]["ingress"][4]["from"] = serde_json::json!([{"ipBlock": {"cidr": "0.0.0.0/0"}}])
+            }),
+        ),
+        (
+            "the operations port without the monitoring rule",
+            policy(|d| {
+                d["spec"]["ingress"].as_array_mut().unwrap().remove(3);
             }),
         ),
     ];

@@ -1,0 +1,21 @@
+{{- /* crates/hub/HARDENING.md, "The migration Job": `hub migrate` as lanekeeper_migrator, before the hub rolls out. */ -}}
+{{- $_ := include "lanekeeper-hub.image" . -}}
+# The schema is changed by this Job and not by the hub, which runs as a role that cannot change a table (S9, S21). A Helm pre-install and
+# pre-upgrade hook; Argo CD runs it as PreSync, so it has completed before the StatefulSet rolls. The hub exits 1 on an unmigrated database,
+# naming the first missing migration. Safe to retry, and safe to run twice at once (sqlx's advisory lock). The hook is replaced at each sync
+# (before-hook-creation) and kept after it, so that its log can be read; a failed one stops the sync.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: lanekeeper-hub-migrate
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-hub.jobLabels" (list . "migrate") | nindent 4 }}
+  annotations:
+    {{- include "lanekeeper-hub.jobHook" "0" | nindent 4 }}
+spec:
+  backoffLimit: {{ .Values.migrate.backoffLimit | int }}
+  # The timeout the process is told, and five minutes for the image and the start: the process ends itself, with a message that names the step.
+  activeDeadlineSeconds: {{ add (.Values.migrate.timeoutSeconds | int) (include "lanekeeper-hub.jobDeadlineMargin" . | int) }}
+  template:
+    {{- include "lanekeeper-hub.jobPodTemplate" (dict "root" . "kind" "migrate") | nindent 4 }}

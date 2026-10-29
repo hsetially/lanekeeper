@@ -1,0 +1,12 @@
+base image not pinned by digest
+the final image is a debug or floating tag
+USER must be a numeric non-root uid and gid
+the final stage runs or fetches something
+the final stage copies from the build context
+a secret-looking variable in the image
+ENTRYPOINT must be the exec form
+ADD is not allowed
+`cargo build` without --locked
+`pnpm install` without --frozen-lockfile
+a download piped into a shell
+a download that is not checked with sha256sum -c

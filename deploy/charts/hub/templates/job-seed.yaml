@@ -1,0 +1,73 @@
+{{- /* crates/hub/HARDENING.md, "The seed Job": `hub seed` as lanekeeper_app, after the migration. */ -}}
+{{- if .Values.seed.enabled -}}
+{{- $seed := .Values.seed -}}
+{{- if and $seed.content $seed.existingConfigMap -}}
+{{- fail "set only one of seed.content and seed.existingConfigMap: the seed file comes from a ConfigMap that the chart makes, or from one that exists" -}}
+{{- end -}}
+{{- if not (or $seed.content $seed.existingConfigMap) -}}
+{{- fail "seed.content or seed.existingConfigMap is required when seed.enabled: until the seed has run with the swimlanes' service accounts, no agent can join" -}}
+{{- end -}}
+{{- /*
+  A Job's pod template cannot change, so everything that changes it changes the name. The name is a short hash of the pod template as it
+  would be made for this ConfigMap (the image, the resources, the timeout, the Secrets, the labels: a change of the chart too), the revision,
+  the file and the number of tries. The ConfigMap the chart makes carries the same hash, so a new file is a new ConfigMap and a new Job.
+
+  The old Job is kept (Prune=false), so the revision is a counter that only moves forward: a revision used again, a revert included, gives the
+  name of a Job that has already run, Argo CD finds it complete and Synced, and nothing runs. A revert is a new revision with the old file. A
+  template cannot see the revisions that came before, so nothing here can refuse a revision that was used; the README says it.
+
+  A ConfigMap that a person made is the record only if every version is kept, so each seed change is a new ConfigMap whose name ends with the
+  revision and is never edited or deleted in place: the old Job still points at the old ConfigMap, which still exists. The chart cannot see
+  whether it was edited, but it can refuse a name that does not move with the revision.
+*/ -}}
+{{- $revision := $seed.revision | int -}}
+{{- if and $seed.existingConfigMap (not (hasSuffix (printf "-%d" $revision) $seed.existingConfigMap)) -}}
+{{- fail (printf "seed.existingConfigMap %q must end with -%d, the seed.revision: a seed change is a new ConfigMap named with the new revision (never an old one edited in place, so that the old Job still points at the file it applied) and a revision that only moves forward" $seed.existingConfigMap $revision) -}}
+{{- end -}}
+{{- $fromContent := not $seed.existingConfigMap -}}
+{{- $probe := include "lanekeeper-hub.jobPodTemplate" (dict "root" . "kind" "seed" "configMap" ($seed.existingConfigMap | default "-")) -}}
+{{- $hash := printf "%s|%d|%s|%d" $probe $revision $seed.content ($seed.backoffLimit | int) | sha256sum | trunc 10 -}}
+{{- $name := printf "lanekeeper-hub-seed-%s" $hash -}}
+{{- $configMap := $seed.existingConfigMap | default $name -}}
+{{- if $fromContent }}
+# The seed file of this release, for a synthetic file such as kind's. A real one lives outside the repository and is given as
+# seed.existingConfigMap. It names service accounts and holds no secret (a private key in it is refused by the policy).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-hub.jobLabels" (list . "seed") | nindent 4 }}
+  annotations:
+    # The file the Job applied is part of the record; see the Job below.
+    argocd.argoproj.io/sync-options: Prune=false
+# The name carries the hash of the file, so this ConfigMap never changes: a new file is a new ConfigMap.
+immutable: true
+data:
+  seed.yaml: |
+    {{- $seed.content | nindent 4 }}
+---
+{{ end -}}
+# Not a hook: it runs after the migration (a PreSync hook of the same sync), and a missing or failed seed must not stop a deploy. The hub
+# starts and serves with no swimlanes meanwhile; an agent can join once this has run with its service account. Safe to retry, and safe to
+# run twice at once. A finished Job is left, and a new image, file or revision is a new Job. The Job and the ConfigMap that holds the file are the
+# record of which file was applied, with which image, when (the hub audits the change but not the operator, HARDENING.md), so neither is pruned:
+# Argo CD prunes what leaves Git, and a new name is the old one leaving. Old seed Jobs accumulate by design, and a person removes them (README).
+# The record holds for a ConfigMap that the chart made (seed.content) and, for one that a person made (seed.existingConfigMap), only while the
+# person keeps every version: see the comment above, and the README.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-hub.jobLabels" (list . "seed") | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
+spec:
+  backoffLimit: {{ $seed.backoffLimit | int }}
+  activeDeadlineSeconds: {{ add ($seed.timeoutSeconds | int) (include "lanekeeper-hub.jobDeadlineMargin" . | int) }}
+  template:
+    {{- include "lanekeeper-hub.jobPodTemplate" (dict "root" . "kind" "seed" "configMap" $configMap) | nindent 4 }}
+{{- end }}

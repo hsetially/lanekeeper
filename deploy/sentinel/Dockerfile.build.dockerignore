@@ -1,0 +1,24 @@
+# BuildKit reads this file for deploy/sentinel/Dockerfile.build. The build needs the Cargo workspace and the sentinel's packaging files.
+.git
+.worktrees
+.claude
+.cursor
+target
+node_modules
+web
+design
+docs
+plans
+prompts
+skills
+fuzz/target
+crates/*/fuzz/target
+# deploy: only the packaging files (the tests, the README and the signing key's marker are not part of the package).
+deploy/*
+!deploy/sentinel
+deploy/sentinel/tests
+deploy/sentinel/README.md
+deploy/sentinel/Dockerfile.build
+deploy/sentinel/Dockerfile.build.dockerignore
+deploy/sentinel/*.sh
+deploy/sentinel/RPM-GPG-KEY-lanekeeper.pub

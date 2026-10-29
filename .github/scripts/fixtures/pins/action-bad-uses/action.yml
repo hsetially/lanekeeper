@@ -1,0 +1,6 @@
+name: bad composite
+description: unpinned
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v4

@@ -1,0 +1,20 @@
+# A job that is called `matrix` is a job, not a matrix: the references under it are checked like any other. Only the `matrix:` of a
+# `strategy:` holds names; the `image: [hub, agent]` below is one, and is not reported.
+name: bad-matrix-job-name
+on: [push]
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: [hub, agent]
+    container:
+      image: alpine:3
+    services:
+      db:
+        image: postgres:16
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "$IMAGE"
+        env:
+          IMAGE: ${{ matrix.image }}

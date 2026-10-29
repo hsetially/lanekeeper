@@ -1,0 +1,13 @@
+# Pulling an image that a matrix names cannot be checked by reading the file, so it is refused.
+name: bad-matrix-expression
+on: [push]
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: [hub, agent]
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - run: true

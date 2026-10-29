@@ -1,0 +1,136 @@
+# Defaults for the gcp chart (09/T3, T5). Config Connector resources: a person applies this chart once per project through the
+# platform ArgoCD (plan 09 A4). The fields without a usable default must be set by the values file of the environment.
+
+# The Google Cloud project the resources belong to (the Config Connector annotation cnrm.cloud.google.com/project-id).
+project: ""
+
+# The project's number, not its id. Google's own service agents (Cloud Storage, Compute Engine) are named by it, and they are the ones
+# that use a customer-managed key. Required when any key is set.
+projectNumber: ""
+
+# staging or prod. The audit checkpoint bucket's retention policy must be locked in prod, and the policies (deploy/policy/storage.rego)
+# read this label to know it. Required.
+environment: ""
+
+# Where the buckets are: a region, or a multi-region, such as europe-west2 or eu. A customer-managed key must be in the same location.
+# Required.
+location: ""
+
+# The Kubernetes service accounts that Workload Identity maps to the Google service accounts lanekeeper-hub and lanekeeper-db that this
+# chart makes (S5, S7). The hub chart's serviceAccount.name, and CloudNativePG's service account, which is named after the cluster.
+workloadIdentity:
+  namespace: lanekeeper
+  hubServiceAccount: lanekeeper-hub
+  dbServiceAccount: lanekeeper-db
+
+# The buckets (09/T5). Names are global to Google Cloud, so there is no default. Each takes a customer-managed key (S10, Q29), a Cloud
+# KMS key as projects/P/locations/L/keyRings/R/cryptoKeys/K. Without one the bucket uses Google-managed encryption and the policy warns
+# (plan 09 A11b); render.sh fails that warning for prod and staging. Every bucket has uniform access and no public access, and is not
+# deleted when its Kubernetes resource is (cnrm.cloud.google.com/deletion-policy: abandon).
+buckets:
+  # CloudNativePG's backups and WAL archive (D29, D40). charts/db's backup.bucket is this name.
+  backup:
+    name: ""
+    cmekKey: ""
+  # The hourly checkpoints of the audit chain (S9). The retention period is a person's decision (plan 09 A19), so it has no default and
+  # the chart refuses to render without one. Prod's is three months (7,776,000 s), decided by a human on 2026-10-26 (values/gcp/prod.yaml).
+  # A locked policy cannot be undone, so isLocked is true only in prod.
+  auditCheckpoint:
+    name: ""
+    cmekKey: ""
+    retentionPeriodSeconds: 0
+    isLocked: false
+  # The documentation files (prompt 14). Versioning is on.
+  docs:
+    name: ""
+    cmekKey: ""
+
+# Other customer-managed keys that Google's services use on our behalf: the keys of the disks (charts/hub storage.cmekKey and
+# charts/db storage.cmekKey). The Compute Engine service agent is given use of each.
+cmek:
+  diskKeys: []
+
+# The hub's keys in Cloud KMS (09/fix, I1; S5, S8, S9): a key ring and four keys, made here and never destroyed by this chart. The hub chart's
+# config.kms.* name the same keys (render.sh contract checks it), as key versions for the three signing keys and without a version for the vault
+# key. The key material is made by Cloud KMS: nothing here imports a key or holds a key version, and the first version of each signing key exists
+# as soon as Config Connector has made the key. What the operator reads off it is in README.md.
+kms:
+  # The key ring, in `location` (a region; whether a multi-region such as eu can hold the hub's keys is not verified). A key ring cannot be
+  # deleted once it is made (not verified), so the name is a decision. No default.
+  keyRing: ""
+  # HSM or SOFTWARE: where the key material is kept. It cannot be changed afterwards, so it is written out. Both keep the material in Cloud
+  # KMS and never export it (S5). deploy/policy/kms.rego requires HSM in prod, and a human relaxes that in docs/decisions.md.
+  protectionLevel: HSM
+  # The names of the four keys: Cloud KMS names, and Kubernetes names. No default: they are the last part of the hub chart's config.kms.*.
+  keys:
+    # The CA that signs the agents' (and the sentinels') client certificates. Asymmetric signing, EC_SIGN_P256_SHA256, and used for nothing else.
+    agentCa: ""
+    # The CA that signs the hub replicas' certificates. Another key than agentCa (an agent's certificate must never be a replica's, S5).
+    replicaCa: ""
+    # Signs the hourly checkpoints of the audit chain (S9). Older versions stay enabled, so that the nightly verification can check old ones.
+    auditCheckpoint: ""
+    # Wraps the data key of each stored GitHub token (S8). Symmetric; the hub names the key and not a version.
+    vault: ""
+  # How often the vault key gets a new primary version, in seconds (at least a day). The versions stay enabled and decrypt what they wrapped
+  # (not verified). Empty: never. The signing keys have no rotation period: the hub pins a key version, so rotating one is a person's step.
+  vaultRotationPeriod: 7776000s
+  # How long a destroyed key version waits before it is destroyed for good, so that a mistake can be undone: 30 days. Cloud KMS's default is 24
+  # hours, and the field cannot be changed once the key is made. A CA key version that is destroyed by mistake takes every agent offline.
+  destroyScheduledDuration: 2592000s
+
+# The Secret Manager secrets the hub reads (09/fix, I1; S7): containers only, never values. A person puts each value in, once (README.md), and the
+# hub's account may read each one (roles/secretmanager.secretAccessor on that secret and no other). Teams webhook secrets are named at run time by
+# an administrator and are not made here.
+secrets:
+  # The customer-managed key that encrypts the secrets (S10, Q29), a Cloud KMS key as projects/P/locations/L/keyRings/R/cryptoKeys/K in `location`.
+  # A key of its own: not the vault key and not a signing key, which are used for nothing else. Without one the secrets use Google-managed
+  # encryption and the policy warns (plan 09 A11b); render.sh fails that warning for prod and staging. The Secret Manager service agent is given
+  # use of the key (it needs projectNumber).
+  cmekKey: ""
+  # The names the hub chart's config.secretManager.* default to. A hub values file that changes one changes it here too; render.sh contract
+  # compares the two charts. A Kubernetes name: lower case letters, digits and hyphens. The constants of the hub's code (write-preview-key,
+  # github-read-token, github-webhook-secret and mcp-token-hmac-key) are in the template: they are not settings.
+  hub:
+    webCert: lanekeeper-web-cert
+    webKey: lanekeeper-web-key
+    agentCaCert: lanekeeper-agent-ca-cert
+    replicaCaCert: lanekeeper-replica-ca-cert
+    entraClient: lanekeeper-entra-client
+    loginCookie: lanekeeper-login-cookie
+
+cloudArmor:
+  enabled: true
+  # The name of the policy; the hub chart's gateway.securityPolicyName is the same string.
+  policyName: lanekeeper-hub
+  # The users' entry point (D25, Q2): the GlobalProtect egress ranges. Required: an empty list would deny everyone, and a
+  # list with the internet in it would allow everyone, so the chart refuses both.
+  usersRanges: []
+  # GitHub's webhook delivery ranges (Q28), allowed on /hooks/github only. Not set by hand: deploy/values/hub/github-hook-ranges.yaml
+  # is written by `node deploy/tools/github-hook-ranges.mjs --write` from GitHub's /meta, layered over these values, and a
+  # nightly job fails when it is stale.
+  githubHookRanges: []
+
+# Admission (09/T6; S19, S20, plan 09 A5): only images signed by CI run. There is no switch to turn it off: the fallback while Q24 is
+# open is the dry-run mode below, which audits and does not block.
+binaryAuthorization:
+  # DRYRUN_AUDIT_LOG_ONLY: an image without an attestation is written to the audit log as one that would have been blocked, and runs.
+  # ENFORCED_BLOCK_AND_AUDIT_LOG: it is blocked. The default is dry-run until Q24 is answered (is Binary Authorization available on the
+  # platform cluster and the swimlane clusters?); setting it to ENFORCED is a person's decision, made in the environment's values.
+  enforcementMode: DRYRUN_AUDIT_LOG_ONLY
+  # The name of the attestor and of its Container Analysis note.
+  attestorName: lanekeeper-ci
+  # The public keys the attestor trusts: the CI signing key in Cloud KMS (images.yml signs with it when LK_COSIGN_KMS_KEY is set). No default and
+  # not in the committed values: the key does not exist until a person makes it, and the chart refuses to render without one. One entry
+  # per key version that may sign (rotation adds a version, then removes the old one):
+  #   - keyVersion: projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/N
+  #     signatureAlgorithm: ECDSA_P256_SHA256
+  #     publicKeyPem: |
+  #       -----BEGIN PUBLIC KEY-----
+  #       ... (gcloud kms keys versions get-public-key N --key K --keyring R --location L)
+  #       -----END PUBLIC KEY-----
+  publicKeys: []
+  # Image name patterns (registry/path, with a * only at the end) that skip the check, besides Google's own system images, which Google's
+  # global policy lets through. Empty. The policy (deploy/policy/binauthz.rego) refuses a pattern that covers an image of ours. Before
+  # the mode is ENFORCED, the third-party images that run in the cluster (the CloudNativePG operator and instances, Argo CD, Config
+  # Connector) need an attestation of ours or an entry here; the audit log of the dry run lists them.
+  admissionWhitelistPatterns: []

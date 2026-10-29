@@ -1,0 +1,19 @@
+{{- if .Values.storage.cmekKey }}
+# Encrypts the data disks with the customer-managed key (S10). The Compute Engine service agent needs
+# cloudkms.cryptoKeyEncrypterDecrypter on the key (charts/gcp, cmek.diskKeys).
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: lanekeeper-db-cmek
+  labels:
+    {{- include "lanekeeper-db.labels" . | nindent 4 }}
+provisioner: pd.csi.storage.gke.io
+parameters:
+  type: {{ .Values.storage.diskType }}
+  disk-encryption-kms-key: {{ .Values.storage.cmekKey | quote }}
+# The volume is made where the pod is, in its zone.
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+# A deleted claim, by a mistake or a prune, must not delete the database's disk: someone deletes it on purpose.
+reclaimPolicy: Retain
+{{- end }}

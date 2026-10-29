@@ -1,0 +1,205 @@
+# Defaults for the hub chart (09/T3). Hardened by default: nothing here loosens S16 or S18. The fields without a usable default
+# (the image digest, the service account, the agent source ranges, and for a Gateway the host name and the certificate) must be
+# set by the values file of the environment (deploy/values/hub/<env>.yaml); the chart refuses to render without them.
+
+image:
+  repository: ghcr.io/hsetially/lanekeeper/hub
+  # sha256:<64 hex digits>. A tag is never deployed (S19, plan 09 A29): images.yml prints the digest of what it published.
+  digest: ""
+
+# Names of image-pull Secrets created out of band (Q8, plan 09 A6). The chart never creates one.
+imagePullSecrets: []
+
+serviceAccount:
+  name: lanekeeper-hub
+  # The Google service account that Workload Identity maps this Kubernetes service account to (S5, S7): Secret Manager, KMS, GCS
+  # and Cloud Trace are reached with it.
+  gcpServiceAccount: ""
+
+# Settings for the hub; only variables that the hub reads (crates/hub/src/config.rs and crates/hub/src/config/*.rs; deploy/tests/env-names.sh
+# checks that). The hub exits 2 and starts nothing without 25 of them (REQUIRED_VARIABLES in crates/hub/tests/hardening.rs), so the chart
+# refuses to render without the ones that have no usable default, and says which. Nothing here is a secret: the Secret Manager entries are
+# the NAMES of secrets, the keys are Cloud KMS resource names, and the hub asks Google for the rest at run time (S7).
+config:
+  # How many proxies sit in front of the hub. 2 behind Google's external HTTPS load balancer (HARDENING.md); 0 where nothing is.
+  trustedProxyHops: 2
+  # The OpenTelemetry collector (OTLP/gRPC). Empty: no collector is deployed and the hub exports nothing (plan 09 A30).
+  otlpEndpoint: ""
+  # The Google project of the Secret Manager secrets and the Cloud KMS keys (LK_GCP_PROJECT). Required.
+  gcpProject: ""
+  # The Entra app registration that users sign in through (single tenant, S1): two GUIDs. Required.
+  entra:
+    tenantId: ""
+    clientId: ""
+  # Cloud KMS resource names (LK_AGENT_CA_KMS_REF, LK_REPLICA_CA_KMS_REF, LK_AUDIT_CHECKPOINT_KMS_REF, LK_VAULT_KMS_REF). Required.
+  # The three signing keys are key VERSIONS (projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/N, EC_SIGN_P256_SHA256);
+  # the two CAs must be two different keys, or an agent's certificate would be a replica's (S5). The vault key is a crypto key WITHOUT a
+  # version (symmetric): KMS picks the version, so a key can be rotated without a change here.
+  kms:
+    agentCa: ""
+    replicaCa: ""
+    auditCheckpoint: ""
+    vault: ""
+  # The Cloud Storage bucket, with a retention lock, that takes the audit checkpoints (LK_AUDIT_CHECKPOINT_BUCKET). Required; it is the
+  # bucket that the gcp chart makes (buckets.auditCheckpoint.name), which deploy/tests/render.sh contract checks.
+  auditCheckpointBucket: ""
+  # The DNS names the agents reach the agent endpoint by (LK_AGENT_ENDPOINT_HOSTS): at most 8, lower case. They go on the agent
+  # listener's certificate, which the agents verify, so the host of hub.endpoint of every agent values file is one of them. Required.
+  agentEndpointHosts: []
+  # Entra object ids of the first administrators (LK_BOOTSTRAP_ADMINS): they become active admins at their first sign-in, and everyone
+  # else starts pending (S1). Remove them once real administrators exist.
+  bootstrapAdmins: []
+  # The NAMES of the Secret Manager secrets the hub reads at start. The hub's Google account needs roles/secretmanager.secretAccessor on
+  # each, and the secrets need a first version: this chart creates neither (charts/gcp makes the containers and the bindings, and
+  # render.sh contract compares the names; a person puts the first version in). The two CA certificates must be two secrets.
+  secretManager:
+    webCert: lanekeeper-web-cert
+    webKey: lanekeeper-web-key
+    agentCaCert: lanekeeper-agent-ca-cert
+    replicaCaCert: lanekeeper-replica-ca-cert
+    entraClient: lanekeeper-entra-client
+    loginCookie: lanekeeper-login-cookie
+  # The Git repositories (D8): all four. Required.
+  git:
+    baseUrl: ""
+    tenantUrl: ""
+    baseRepo: ""
+    tenantRepo: ""
+  # Other LK_* tunables, by variable name. The schema allows exactly the tunables the hub has that a deployment may need, within the
+  # ranges the hub accepts; the addresses, paths, files and secrets are the chart's. Not settable on purpose (the hub's defaults are the
+  # safe state, and a change is a decision of a person, in docs/decisions.md): LK_MCP_NOTIFY_SERVICES (it reaches the config-server's
+  # unauthenticated /update-resources, Q37), LK_RETENTION_ENABLED and LK_RETENTION_DRY_RUN (they delete blobs, D116, D118),
+  # LK_EXTRA_DENY_GLOBS, LK_TEAMS_ALLOWED_HOSTS, LK_GITHUB_API_BASE and LK_ENTRA_AUTHORITY_HOST (each needs the FQDN egress policy to name
+  # the new host too), LK_ENTRA_REDIRECT_PATH and LK_AUDIT_CHECKPOINT_VERIFY_KMS_REFS.
+  # LK_MCP_AUTH=personal_token also needs the Secret Manager secret mcp-token-hmac-key (at least 32 random bytes as base64url) and the
+  # hub's account needs roles/secretmanager.secretAccessor on it: the hub does not start in that mode without it. The chart does not
+  # create it.
+  # LK_SHUTDOWN_GRACE_SECS + LK_SHUTDOWN_DRAIN_SECS + 10 must not exceed the pod's terminationGracePeriodSeconds, 45: the chart refuses
+  # to render otherwise. It also refuses LK_START_TIMEOUT_SECS above 8 (six start steps in a row against the startup probe's 60 s window) and caches (LK_BLOB_CACHE_MIB +
+  # LK_CORPUS_CACHE_MIB) raised above their defaults, 768 MiB, by more than the memory limit is above the request.
+  tuning: {}
+
+database:
+  # The CloudNativePG cluster the hub talks to, and the Secrets it reads one file from each (HARDENING.md, plan 09 A7, A9).
+  clusterName: lanekeeper-db
+  # The application role's (lanekeeper_app): the hub reads its connection URL, key `uri`, and so does the seed Job.
+  credentialsSecretName: lanekeeper-db-app
+  # The migrator's (lanekeeper_migrator, the database's owner): only the migration Job reads its connection URL, key `uri`. Made out of
+  # band like the other (charts/db README, step 2); it is never the application role's Secret.
+  migratorSecretName: lanekeeper-db-migrator
+  caSecretName: lanekeeper-db-ca
+
+# The Git mirror: a volume per replica (D62).
+storage:
+  size: 50Gi
+  # A Cloud KMS key, projects/P/locations/L/keyRings/R/cryptoKeys/K (S10). With it the chart renders a StorageClass that encrypts
+  # the disks with it. Without it the volumes use the cluster's default class, which is Google-managed encryption, and the policy
+  # warns (plan 09 A11b, Q29); render.sh fails that warning for prod and staging.
+  cmekKey: ""
+  diskType: pd-balanced
+  # Only used without cmekKey.
+  fallbackClassName: standard-rwo
+
+resources:
+  requests:
+    cpu: 500m
+    # The P11 budget (perf/budgets.toml, P11.memory_mib = 1536): resources.rego fails any other value.
+    memory: 1536Mi
+  limits:
+    cpu: "4"
+    memory: 2Gi
+
+topology:
+  # zone: the replicas must be in different zones (D62). kind: one zone, so the replicas only prefer different hosts, and the
+  # policy warns every time (plan 09 A13). Never use kind outside kind.
+  mode: zone
+
+network:
+  # Where the users' load balancer's proxies and health checks come from (plan 09 A10): Google's two ranges.
+  googleRanges:
+    - 35.191.0.0/16
+    - 130.211.0.0/22
+  # Who may reach the agent load balancer (443, forwarded to the pods' 8444): the clusters' outbound IPs (Q1) and the NFS VM's
+  # (plan 09 A28). Required. Used by the LoadBalancer's loadBalancerSourceRanges and by the NetworkPolicy, so that the two cannot differ.
+  agentSourceRanges: []
+  # The namespace of Prometheus and of the OpenTelemetry collector.
+  monitoringNamespace: monitoring
+  # GKE's FQDNNetworkPolicy (plan 09 A11). false: external hosts are reached by 443 to every address outside the private ranges,
+  # which is weaker, is marked, and is warned about.
+  fqdnPolicy: true
+  # The Teams webhook host (Q9). Empty until it is known: then there is no Teams egress.
+  teamsWebhookHost: ""
+
+# The agents' entry point (D25): a TCP pass-through load balancer with a source allowlist (Q1).
+agentLoadBalancer:
+  enabled: true
+  # A reserved regional external IP address, if there is one.
+  ipAddress: ""
+  # GKE's backend-service-based external passthrough load balancer.
+  annotations:
+    cloud.google.com/l4-rbs: "enabled"
+
+# The users' entry point (D25): a Gateway with TLS, behind a Cloud Armor policy (Q2).
+gateway:
+  enabled: true
+  hostname: ""
+  # The name of a reserved global external IP address.
+  addressName: ""
+  # Exactly one: Compute Engine SSL certificates by name, or Certificate Manager certificates by name. Never a Kubernetes Secret.
+  tls:
+    preSharedCerts: ""
+    certManagerCerts: ""
+  # The Cloud Armor policy of the gcp chart (charts/gcp), attached to the web Service.
+  securityPolicyName: lanekeeper-hub
+  # A server-sent-events stream is one request; the default 30 s would cut every live view.
+  timeoutSec: 3600
+
+# The hub image's two Jobs (crates/hub/HARDENING.md, "The migration Job" and "The seed Job"). Both run `hub <command>` from the StatefulSet's
+# image (by the same digest), as the hub pod's security context says, with their own pod label, ServiceAccount (no Google identity, no token)
+# and NetworkPolicy (DNS and the database, nothing in), and the volumes of their table, so that the migrator's credential is never in a pod
+# that faces users.
+jobs:
+  # Not measured: `hub migrate` and `hub seed` each hold one database connection and a few files. Raise them if a run is killed for memory.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+# `hub migrate` as lanekeeper_migrator (LK_MIGRATE_TIMEOUT_SECS, 1 to 7200): a Helm pre-install and pre-upgrade hook, which Argo CD runs as
+# PreSync, so the schema is complete before the hub rolls out. Safe to retry, and safe to run twice at once. The Job's deadline is the
+# timeout and five minutes, so that the process ends itself with a message that names the step.
+migrate:
+  timeoutSeconds: 600
+  backoffLimit: 2
+
+# `hub seed` as lanekeeper_app (LK_SEED_TIMEOUT_SECS, 1 to 3600): writes the rows that say which Google service account may join as which
+# swimlane's agent or as which NFS VM's sentinel. A Job and not a hook: it runs after the migration, and a missing seed must not stop a
+# deploy. Until it has run with a file that carries every swimlane's agent_service_account and every sentinel's service_account, nothing
+# can join.
+seed:
+  enabled: false
+  # The file is a reviewed change (whoever applies it makes a service account the agent of a swimlane) and the real one lives outside this
+  # repository (AGENTS.md rule 12). Give it as the name of a ConfigMap that holds it under the key seed.yaml, made out of band
+  # (kubectl create configmap NAME-<revision> --from-file=seed.yaml=FILE). The name ends with `-` and the revision below, and a change of the
+  # file is a new ConfigMap and a new revision, never an edit: the chart keeps the ConfigMap only when it made it, so for this one the record
+  # of what was applied holds only while the person keeps every version ...
+  existingConfigMap: ""
+  # ... or as text here, which the chart makes a ConfigMap of. Only a synthetic file (kind) belongs in the repository. Exactly one of the two.
+  content: ""
+  # A Job's pod template cannot change, so the Job is named with a short hash of the image digest, this revision, the file (or the name of
+  # its ConfigMap) and the timeout: a new image or file is a new Job.
+  #
+  # A COUNTER THAT ONLY MOVES FORWARD. An old Job is kept (Prune=false: it is the record of what was applied), so a revision that is used
+  # again, a revert included, names a Job that has already run: Argo CD finds it complete and Synced, and `hub seed` does not run, while Git
+  # shows the old file. A revert is a new revision with the old file. A template cannot see the revisions that came before, so the chart
+  # cannot refuse one that was used; the schema takes a positive integer.
+  #
+  # With existingConfigMap, every seed change is a NEW ConfigMap whose name ends with this revision (`lanekeeper-hub-seed-prod-3` at
+  # revision 3; the chart refuses a name that does not), made with kubectl create and never edited or deleted in place: the old Job still
+  # points at the old ConfigMap, which is then still the record of the file it applied. With content, the chart makes and keeps the ConfigMap.
+  revision: 1
+  timeoutSeconds: 120
+  backoffLimit: 2

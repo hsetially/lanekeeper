@@ -1,0 +1,158 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "lanekeeper-agent values",
+  "description": "Helm checks the values against this before rendering. Unknown keys are refused, so a typo cannot silently turn a setting off.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["image", "swimlane", "hub", "configServer", "nfs", "namespaces", "network"],
+  "properties": {
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "digest"],
+      "properties": {
+        "repository": { "type": "string", "pattern": "^[a-z0-9][a-z0-9./_-]*$" },
+        "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "A tag is never deployed (S19)." }
+      }
+    },
+    "imagePullSecrets": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "swimlane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "cluster", "project"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$", "description": "A swimlane id: lowercase letters, digits and '-', at most 63 characters (the agent refuses anything else)." },
+        "cluster": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$" },
+        "project": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$" }
+      }
+    },
+    "hub": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["endpoint"],
+      "properties": {
+        "endpoint": { "type": "string", "pattern": "^https://[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?(:[0-9]{1,5})?$", "description": "https://host[:port], with no credentials, path or query." },
+        "audience": { "type": "string", "pattern": "^([^\\s\\x00-\\x1f]{1,256})?$" }
+      }
+    },
+    "configServer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespace"],
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$",
+          "not": { "enum": ["kube-system", "kube-public", "kube-node-lease"] },
+          "description": "The one namespace the config-server runs in: a name, never one of the cluster's own components (kube-system, kube-public, kube-node-lease), and (the template checks) never the agent's own. The egress rule and LK_CONFIG_SERVER_URL name it (crates/agent/HARDENING.md)."
+        },
+        "service": { "type": "string", "pattern": "^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$", "description": "The name of the config-server's Service in that namespace (a DNS-1035 label)." }
+      }
+    },
+    "hubCa": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pem": { "type": "string", "maxLength": 65536, "description": "The hub's CA certificate. Public; the chart refuses a private key." }
+      }
+    },
+    "nfs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["server", "exportPath"],
+      "properties": {
+        "server": { "type": "string", "pattern": "^[A-Za-z0-9]([A-Za-z0-9.:-]{0,251}[A-Za-z0-9])?$" },
+        "exportPath": { "type": "string", "pattern": "^/[^\\s\\x00-\\x1f]{0,254}$" },
+        "uid": { "type": "integer", "minimum": 1, "maximum": 4294967294, "description": "Never 0: the agent does not run as root (S16)." },
+        "gid": { "type": "integer", "minimum": 1, "maximum": 4294967294 }
+      }
+    },
+    "namespaces": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "description": "The namespaces the agent watches. The agent's Roles are here and in its own namespace, so the list is its blast radius (S17).",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+        "not": { "enum": ["kube-system", "kube-public", "kube-node-lease"] }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "gcpServiceAccount": { "type": "string", "pattern": "^([a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\\.iam\\.gserviceaccount\\.com)?$" }
+      }
+    },
+    "joinToken": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "enabled": { "type": "boolean" } }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tuning": {
+          "type": "object",
+          "description": "The tunables of crates/agent/src/config.rs. Addresses, paths, files and Secret names are the chart's, not tunables.",
+          "additionalProperties": false,
+          "properties": {
+            "LK_CONFIG_SERVER_DEPLOYMENT": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?/[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$" },
+            "LK_HELM_HINT_CHART_GLOBS": { "type": "string", "pattern": "^[^\\x00-\\x1f]+$", "maxLength": 4096 },
+            "LK_IGNORE_GLOBS": { "type": "string", "pattern": "^[^\\x00-\\x1f]+$", "maxLength": 4096 },
+            "LK_LOG": { "type": "string", "enum": ["error", "warn", "info", "debug", "trace"] },
+            "LK_POOL_THREADS": { "type": ["integer", "string"] },
+            "LK_SYNC_JOB_LABEL": { "type": "string", "pattern": "^[^=\\s]+=[^\\s]*$" },
+            "LK_SYNC_JOB_NAME_GLOBS": { "type": "string", "pattern": "^[^\\x00-\\x1f]+$", "maxLength": 4096 }
+          }
+        }
+      }
+    },
+    "spool": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The durable spool (D74): a claim of its own on a customer-managed key (S10). The policy holds the claim larger than maxBytes.",
+      "properties": {
+        "size": { "type": "string", "pattern": "^[1-9][0-9]{0,5}(Mi|Gi)$", "description": "Mi or Gi: the policy compares it with maxBytes." },
+        "maxBytes": { "type": "integer", "minimum": 4194304, "maximum": 68719476736, "description": "LK_SPOOL_MAX_BYTES: 4 MiB to 64 GiB, the agent's own range." },
+        "cmekKey": { "type": "string", "pattern": "^(projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+)?$" },
+        "diskType": { "type": "string", "enum": ["pd-balanced", "pd-ssd"] },
+        "fallbackClassName": { "type": "string", "minLength": 1 }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requests", "limits"],
+      "properties": {
+        "requests": { "type": "object", "required": ["cpu", "memory"], "additionalProperties": false, "properties": { "cpu": { "type": ["string", "number"] }, "memory": { "type": "string" } } },
+        "limits": { "type": "object", "required": ["cpu", "memory"], "additionalProperties": false, "properties": { "cpu": { "type": ["string", "number"] }, "memory": { "type": "string" } } }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hubAddresses", "kubeApiAddresses"],
+      "properties": {
+        "hubAddresses": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": { "type": "string", "pattern": "^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/(2[4-9]|3[0-2])$" },
+          "description": "IPv4 blocks of a /24 at most: the hub's load balancer (Q1). An empty list is no way to the hub, and a wider block is the internet."
+        },
+        "kubeApiAddresses": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": { "type": "string", "pattern": "^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/(2[4-9]|3[0-2])$" },
+          "description": "IPv4 blocks of a /24 at most: the cluster's control-plane endpoint."
+        },
+        "monitoringNamespace": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$" }
+      }
+    }
+  }
+}

@@ -1,0 +1,97 @@
+# syntax=docker.io/docker/dockerfile:1.28.0@sha256:bb22d9815c728170f72750f4e5b0d672e06176142e1d602c7e66c050100b7e5b
+#
+# The sentinel's binary and RPM (09/T8; S19, S20, S25). Not an image to run: the last stage is an export of two files. Build it with
+# deploy/sentinel/build.sh, which sets the time and output options that make two builds of one commit produce one file:
+#
+#     deploy/sentinel/build.sh --out target/sentinel
+#
+# Stages: `binary` builds the sentinel as a static x86_64-unknown-linux-musl executable and checks that it is static; `rpm-tools` is
+# rpm and gpg from Ubuntu's signed archive and nothing of ours; `rpm` extends `rpm-tools` with the binary and packages it with rpmbuild
+# from deploy/sentinel/lanekeeper-sentinel.spec; `out` holds the two files and nothing else. Signing is not here, because a signing key
+# must never be part of a build or a layer (sign.sh runs the tools of `rpm-tools` with a key that only lives in memory).
+#
+# WHY `rpm-tools` IS A STAGE OF ITS OWN. The job that signs a release holds the Workload Identity credential and receives the release
+# key, and it needs the image with rpm and gpg (`build.sh --tools`, which builds this target). BuildKit builds the whole dependency graph
+# of a target, so if the tools image were the `rpm` stage (which copies the binary), that job would run `cargo build` and the build
+# script of every crate in the sentinel's tree first. `rpm-tools` depends on no other stage, so building it runs the apt install and
+# nothing else. dockerfile_artifact.rego refuses a change that gives it a dependency or a build tool, and tests/tools-graph.sh shows the
+# same on BuildKit's own plan of the target.
+#
+# Every base image is pinned by digest (the multi-architecture index), read from the registries on 2026-10-26:
+#
+#     docker buildx imagetools inspect docker.io/library/rust:1.88.0-trixie
+#     docker buildx imagetools inspect docker.io/library/ubuntu:noble-20260930.1
+#
+# WHY UBUNTU FOR rpmbuild. The package is for Rocky Linux 8, but the build needs rpmbuild, which the Rocky images do not have and
+# whose repositories are not reachable from every build environment. Ubuntu 24.04's rpm 4.18 builds the same package (the spec fixes the
+# payload to what the rpm 4.14 of Rocky 8 reads), and tests/install.sh installs and verifies the result on Rocky 8.9 and 8.10.
+#
+# Network steps take an optional `build_ca` secret: a CA bundle for builds behind a TLS-intercepting proxy. It is mounted over the system
+# bundle for that one instruction and is never part of a layer. CI does not pass it. LK_APT_MIRROR is the Ubuntu archive to use (http by
+# default, as apt does, because the archive's signatures are what apt checks; https for a build behind such a proxy).
+
+FROM docker.io/library/rust:1.88.0-trixie@sha256:f2a17efbe58b00470be6e73dbea79705a789ee20ee8de2dcdaf73c0c6091f1db AS binary
+# The toolchain the image ships, never one rustup would fetch for rust-toolchain.toml.
+ENV RUSTUP_TOOLCHAIN=1.88.0 CARGO_NET_RETRY=3
+# The C compiler that cargo links with (the musl target links with `cc`); the build fails here, not halfway, without it.
+RUN cc --version
+# The standard library of x86_64-unknown-linux-musl is not in the image. It is Rust 1.88.0's own release file (2025-06-26), checked
+# against a sha256 that was computed from a download, so a different file under the same name is refused; rustup would fetch the same
+# file and trust the connection alone.
+RUN --mount=type=secret,id=build_ca,target=/etc/ssl/certs/ca-certificates.crt,required=false \
+    curl -fsSL --retry 3 -o /tmp/rust-std.tar.xz https://static.rust-lang.org/dist/rust-std-1.88.0-x86_64-unknown-linux-musl.tar.xz \
+    && echo "0c42b63c18a6343851e0f27aeb5cff73146c86fc95bc4e2bf51b726c4311249e  /tmp/rust-std.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/rust-std.tar.xz -C /tmp \
+    && /tmp/rust-std-1.88.0-x86_64-unknown-linux-musl/install.sh --prefix="$(rustc --print sysroot)" --disable-ldconfig \
+    && rm -rf /tmp/rust-std.tar.xz /tmp/rust-std-1.88.0-x86_64-unknown-linux-musl
+# Symbols are stripped by cargo (there is no debugger on the VM to use them), and the build paths are rewritten, so the binary names
+# neither the build directory nor the Cargo home. crt-static is the musl default, written out so that it cannot be changed by accident.
+ENV CARGO_PROFILE_RELEASE_STRIP=symbols \
+    RUSTFLAGS="--remap-path-prefix=/src=. --remap-path-prefix=/usr/local/cargo=/cargo -C target-feature=+crt-static"
+WORKDIR /src
+COPY . .
+# --locked: exactly the versions in Cargo.lock, which `cargo deny` and `cargo audit` have checked (S19).
+RUN --mount=type=secret,id=build_ca,target=/etc/ssl/certs/ca-certificates.crt,required=false \
+    cargo build --release --locked --target x86_64-unknown-linux-musl -p sentinel
+# Static means: an x86-64 executable with no interpreter and no shared library to find on the VM. The build stops here if it is not.
+RUN set -eu; \
+    bin=/src/target/x86_64-unknown-linux-musl/release/sentinel; \
+    readelf -hW "$bin" | grep -Eq 'Machine:[[:space:]]+Advanced Micro Devices X86-64' || { echo "the sentinel is not an x86-64 executable"; exit 1; }; \
+    if readelf -lW "$bin" | grep -q INTERP; then echo "the sentinel asks for a dynamic loader: it is not static"; exit 1; fi; \
+    if readelf -dW "$bin" 2>/dev/null | grep -q NEEDED; then echo "the sentinel needs a shared library: it is not static"; exit 1; fi; \
+    echo "static: no interpreter, no shared library"
+
+FROM docker.io/library/ubuntu:noble-20260930.1@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac AS rpm-tools
+ARG LK_APT_MIRROR=http://archive.ubuntu.com/ubuntu
+# What is pinned and what is not (S19, S20). The base is pinned by digest. rpm is pinned to the version of the archive's release pocket,
+# which does not change, because it builds the package and so is part of what the package is. gpg and its agent are the tools that sign:
+# their upstream version is pinned and the archive's revision is a glob (`2.4.4-2ubuntu17*`, quoted so that the shell leaves it), because the archive drops a superseded
+# revision from its index (an exact pin would fail the build at each security update) and a signing tool should take security fixes. The
+# libraries they load (libgcrypt20, libgnutls30t64, libassuan0 and the rest) are not pinned and float inside noble, noble-updates and
+# noble-security. Everything is checked by apt against the Ubuntu archive keyring; no other repository is configured; nothing else is
+# installed (--no-install-recommends). The exact versions that were installed are printed by this step and kept in
+# /usr/share/lanekeeper-tools-packages.txt, so the log of a release build and `docker run IMAGE cat` say what signed it.
+# (mode=0444: apt reads the bundle as its own unprivileged user, _apt.)
+RUN --mount=type=secret,id=build_ca,target=/etc/ssl/certs/ca-certificates.crt,required=false,mode=0444 \
+    set -eu; \
+    rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*; \
+    printf 'Types: deb\nURIs: %s\nSuites: noble noble-updates noble-security\nComponents: main universe\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' "$LK_APT_MIRROR" > /etc/apt/sources.list.d/lanekeeper.sources; \
+    if [ -n "${HTTPS_PROXY:-}" ]; then printf 'Acquire::https::Proxy "%s";\nAcquire::https::CaInfo "/etc/ssl/certs/ca-certificates.crt";\n' "$HTTPS_PROXY" > /etc/apt/apt.conf.d/99proxy; fi; \
+    apt-get update; \
+    apt-get install --yes --no-install-recommends rpm=4.18.2+dfsg-2.1build2 'gpg=2.4.4-2ubuntu17*' 'gpg-agent=2.4.4-2ubuntu17*'; \
+    dpkg-query -W -f='${Package}=${Version}\n' | sort | tee /usr/share/lanekeeper-tools-packages.txt; \
+    rm -rf /var/lib/apt/lists/* /etc/apt/apt.conf.d/99proxy
+WORKDIR /build
+
+FROM rpm-tools AS rpm
+ARG SOURCE_DATE_EPOCH
+ARG LK_VERSION
+COPY --from=binary /src/target/x86_64-unknown-linux-musl/release/sentinel /build/SOURCES/lanekeeper-sentinel
+COPY deploy/sentinel/lanekeeper-sentinel.spec /build/SPECS/
+COPY deploy/sentinel/lanekeeper-sentinel.service deploy/sentinel/lanekeeper-sentinel.tmpfiles.conf deploy/sentinel/audisp/af_unix.conf deploy/sentinel/audit/lanekeeper.rules.in /build/SOURCES/
+RUN test -n "$SOURCE_DATE_EPOCH" && test -n "$LK_VERSION" \
+    && rpmbuild -bb --target x86_64 --define "_topdir /build" --define "lk_version $LK_VERSION" /build/SPECS/lanekeeper-sentinel.spec
+
+FROM scratch AS out
+COPY --from=binary /src/target/x86_64-unknown-linux-musl/release/sentinel /lanekeeper-sentinel
+COPY --from=rpm /build/RPMS/x86_64/ /

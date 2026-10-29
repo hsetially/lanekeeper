@@ -1,0 +1,87 @@
+{{- /* crates/agent/RBAC.md, rendered: nothing the file does not say. deploy/policy/contract.rego shows that the two are equal, and
+       rbac.rego that no Secret is listed or watched, none is granted without a name, and there is no ClusterRole. */ -}}
+{{- range $namespace := .Values.namespaces }}
+---
+# One Role and RoleBinding in each namespace the agent watches (LK_NAMESPACES). A Role cannot grant "every namespace the agent is
+# configured for" in one object.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: lanekeeper-agent-workloads
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "lanekeeper-agent.labels" $ | nindent 4 }}
+rules:
+  # Watch the Deployments (and read their pod template's environment variable names, selector and Helm labels).
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  # Restart: patch the pod template's restartedAt annotation. Nothing else is written, and nothing is deleted.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["patch"]
+  # Pods give the start times that show whether a change has been picked up.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # Jobs: the sync Jobs (D75) and Helm hints on Jobs (Q19).
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: lanekeeper-agent-workloads
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "lanekeeper-agent.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: lanekeeper-agent-workloads
+subjects:
+  - kind: ServiceAccount
+    name: lanekeeper-agent
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+---
+# The two Secrets, in the agent's own namespace. Both by name, and neither with list or watch: Kubernetes does not apply resourceNames
+# to those verbs, so granting them would expose every Secret in the namespace. No `create` either, because it cannot be limited by
+# name: the chart makes the certificate Secret and the agent only updates it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: lanekeeper-agent-secrets
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-agent.labels" . | nindent 4 }}
+rules:
+  # The certificate Secret: read the key and certificate at start, write the renewed certificate (S5).
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["lanekeeper-agent-cert"]
+    verbs: ["get", "update"]
+  {{- if .Values.joinToken.enabled }}
+  # The join-token Secret: read the one-time token, only when Workload Identity is unavailable (Q26).
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["lanekeeper-agent-join-token"]
+    verbs: ["get"]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: lanekeeper-agent-secrets
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-agent.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: lanekeeper-agent-secrets
+subjects:
+  - kind: ServiceAccount
+    name: lanekeeper-agent
+    namespace: {{ .Release.Namespace }}

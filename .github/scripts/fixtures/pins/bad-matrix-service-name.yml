@@ -1,0 +1,15 @@
+# A service called `matrix`, and a key called `matrix` that is not under a `strategy:`, hide nothing either.
+name: bad-matrix-service-name
+on: [push]
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    services:
+      matrix:
+        image: postgres:16
+    steps:
+      - uses: ./.github/actions/something
+        with:
+          matrix:
+            image: redis:7
+      - uses: actions/checkout@v4

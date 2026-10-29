@@ -1,0 +1,20 @@
+name: bad-idtoken-shell-c
+on:
+  push:
+    tags: ["v*"]
+permissions: {}
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - run: bash -c 'cargo build --release'
+      - run: sh -ec "npm ci"
+      - run: sudo bash -o pipefail -c 'pip install requests'
+      - run: |
+          set -eu
+          env FOO=1 bash -lc "cd web && yarn install"
+          timeout 600 bash -c 'make all'

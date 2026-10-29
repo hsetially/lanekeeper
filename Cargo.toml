@@ -222,3 +222,11 @@ print_stderr = "warn"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# B20 (plans/09-deployment-ci.blockers.md). The bench profile inherits the release profile, so the first cold-cache compile of the bench
+# job compiled `jsonschema` (a dev-dependency of hub-mcp, used by its contract tests and by no benchmark) on one core: 28 of the job's
+# 33 minutes. A human decided on 2026-10-26 to relax codegen-units for this one package in the bench profile. The release profile above
+# is untouched, so the shipped images do not change (jsonschema is not in them). The saving is UNMEASURED until the next cold CI run of
+# the bench job. .github/scripts/cargo-profile.test.mjs holds this override to jsonschema and to the bench profile.
+[profile.bench.package.jsonschema]
+codegen-units = 16

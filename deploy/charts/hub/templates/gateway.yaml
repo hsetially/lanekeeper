@@ -1,0 +1,115 @@
+{{- if .Values.gateway.enabled }}
+{{- $host := required "gateway.hostname is required when gateway.enabled (Q2)" .Values.gateway.hostname -}}
+{{- $address := required "gateway.addressName is required: the name of a reserved global external IP address" .Values.gateway.addressName -}}
+{{- $tls := .Values.gateway.tls -}}
+{{- if eq (empty $tls.preSharedCerts) (empty $tls.certManagerCerts) -}}
+{{- fail "gateway.tls: set exactly one of preSharedCerts and certManagerCerts (a certificate is never a Kubernetes Secret, S7)" -}}
+{{- end -}}
+# The users' entry point (D25): the external Application Load Balancer, HTTPS only. Port 80 is not opened. TLS ends here; the
+# certificate is a Compute Engine or Certificate Manager certificate that is named, not a Secret in the cluster (S7).
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: lanekeeper-hub
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-hub.labels" . | nindent 4 }}
+spec:
+  gatewayClassName: gke-l7-global-external-managed
+  addresses:
+    - type: NamedAddress
+      value: {{ $address | quote }}
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: {{ $host | quote }}
+      tls:
+        mode: Terminate
+        options:
+          {{- if $tls.preSharedCerts }}
+          networking.gke.io/pre-shared-certs: {{ $tls.preSharedCerts | quote }}
+          {{- else }}
+          networking.gke.io/cert-manager-certs: {{ $tls.certManagerCerts | quote }}
+          {{- end }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+        kinds:
+          - kind: HTTPRoute
+---
+# Everything goes to the web Service. /hooks/github has its own rule so that the route to GitHub's webhooks is explicit (P2,
+# Q28); who may reach it is Cloud Armor's rule on that exact path (charts/gcp).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: lanekeeper-hub
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-hub.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: lanekeeper-hub
+  hostnames:
+    - {{ $host | quote }}
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: /hooks/github
+      backendRefs:
+        - name: lanekeeper-hub-web
+          port: 443
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: lanekeeper-hub-web
+          port: 443
+---
+# Cloud Armor in front of the web Service, and a timeout that lets a server-sent-events stream live.
+apiVersion: networking.gke.io/v1
+kind: GCPBackendPolicy
+metadata:
+  name: lanekeeper-hub-web
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-hub.labels" . | nindent 4 }}
+spec:
+  default:
+    securityPolicy: {{ required "gateway.securityPolicyName is required: the Cloud Armor policy of the gcp chart" .Values.gateway.securityPolicyName | quote }}
+    timeoutSec: {{ .Values.gateway.timeoutSec }}
+    logging:
+      enabled: true
+  targetRef:
+    group: ""
+    kind: Service
+    name: lanekeeper-hub-web
+---
+# The load balancer asks /readyz on the operations port (plan 09 A10), not the serving port: a replica that cannot reach its
+# database leaves the pool instead of answering errors.
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: lanekeeper-hub-web
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-hub.labels" . | nindent 4 }}
+spec:
+  default:
+    checkIntervalSec: 5
+    timeoutSec: 3
+    healthyThreshold: 1
+    unhealthyThreshold: 3
+    config:
+      type: HTTP
+      httpHealthCheck:
+        portSpecification: USE_FIXED_PORT
+        port: 9090
+        requestPath: /readyz
+  targetRef:
+    group: ""
+    kind: Service
+    name: lanekeeper-hub-web
+{{- end }}

@@ -244,7 +244,11 @@ hang_stub() { # hangs-before-success
     printf 'echo run >>"%s/count"\n' "$case_dir"
     printf 'cat "%s/ubuntu.sources" >>"%s/sources-seen"\n' "$case_dir" "$case_dir"
     printf 'echo %s >>"%s/sources-seen"\n' "'--'" "$case_dir"
+    # The single quotes are deliberate: this line and the next are written into the stub script, and the $(...) and $runs in them are for the
+    # stub to expand when it runs later, not for this shell now.
+    # shellcheck disable=SC2016
     printf 'runs=$(wc -l <"%s/count" | tr -d " ")\n' "$case_dir"
+    # shellcheck disable=SC2016
     printf 'if [ "$runs" -le %s ]; then /bin/sleep 30; fi\n' "$1"
   } >"$case_dir/hang-install.sh"
   printf 'bash %s/hang-install.sh' "$case_dir"

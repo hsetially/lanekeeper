@@ -1,0 +1,215 @@
+# Rust (09/T2; S19, S22): format, lint, tests against a real Postgres, the SQL query check, the supply-chain checks, and the
+# fuzz targets for 30 seconds each. Everything builds with --locked, so the versions are the ones in Cargo.lock that cargo deny
+# and cargo audit have judged. The nightly workflow runs the same fuzz targets for ten minutes each.
+#
+# The tests run with LK_REQUIRE_DOCKER=1: a test that cannot get its database fails instead of printing SKIPPED and passing.
+# Most of them use the Postgres service below (LK_TEST_PG_ADMIN_URL); the few that start their own container (the TLS test of
+# the hub) use the Docker daemon, which pulls Docker Hub images through the mirror of the docker-hub-mirror action.
+name: rust
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "deny.toml"
+      - "clippy.toml"
+      - "rustfmt.toml"
+      - "crates/**"
+      - "fuzz/**"
+      - "db/**"
+      - "proto/**"
+      - "api/**"
+      - "perf/**"
+      - "docs/**"
+      - "skills/**"
+      - "deploy/**"
+      - "web/.nvmrc"
+      - "Justfile"
+      - ".github/workflows/rust.yml"
+      - ".github/actions/docker-hub-mirror/**"
+  push:
+    branches: [main]
+permissions: {}
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "3"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+      # rust-toolchain.toml makes rustup install the pinned toolchain with rustfmt and clippy.
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    services:
+      postgres:
+        # The index digest of pgvector/pgvector:pg16, the image of deploy/dev/compose.yaml, read through the mirror because a
+        # service is pulled before any step can set the mirror up. The password is for this throwaway container only.
+        image: mirror.gcr.io/pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+        env:
+          POSTGRES_USER: lanekeeper
+          POSTGRES_PASSWORD: lanekeeper-ci-only
+          POSTGRES_DB: lanekeeper
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lanekeeper -d lanekeeper"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      LK_REQUIRE_DOCKER: "1"
+      LK_TEST_PG_ADMIN_URL: postgres://lanekeeper:lanekeeper-ci-only@localhost:5432/lanekeeper
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      # Main run 40166747415 (head 4234929, PR 25) ran out of disk in `cargo test --workspace`: Postgres error 53100 "No space left
+      # on device" in the explain tests. The debug build and the Postgres containers with their large seeded tables share the
+      # runner's root disk. Remove what this job never uses, and print df so the headroom is visible. The same two steps are in
+      # the image job of images.yml and in the bench jobs (bench.yml, nightly.yml); consistency.test.mjs keeps the copies equal.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: ./.github/actions/docker-hub-mirror
+        with:
+          restart: "false"
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+      - run: cargo test --workspace --locked
+      - name: Disk left
+        if: always()
+        run: df -h /
+
+  sqlx:
+    # `cargo sqlx prepare --check` compiles every query macro against a migrated database and fails when .sqlx is out of date.
+    # No crate uses a query macro yet, so today it passes without reading a query (plan 09 A23); it is here so that the first
+    # macro cannot be added without its .sqlx data.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: mirror.gcr.io/pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+        env:
+          POSTGRES_USER: lanekeeper
+          POSTGRES_PASSWORD: lanekeeper-ci-only
+          POSTGRES_DB: lanekeeper
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lanekeeper -d lanekeeper"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      SUPERUSER_URL: postgres://lanekeeper:lanekeeper-ci-only@localhost:5432/lanekeeper
+      # The role and password of deploy/dev/init.sql, which are for development and tests only.
+      DATABASE_URL: postgres://lanekeeper_migrator:lanekeeper-migrator-dev-only@localhost:5432/lanekeeper?sslmode=disable
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just@1.40.0
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+      - name: Install sqlx-cli at the version of the sqlx crate
+        run: |
+          set -euo pipefail
+          cargo install --locked sqlx-cli --version "$(just --evaluate sqlx_cli_version)" --no-default-features --features postgres
+      - name: Create the roles and migrate the database
+        run: |
+          set -euo pipefail
+          psql "$SUPERUSER_URL" -v ON_ERROR_STOP=1 -f deploy/dev/init.sql
+          for f in db/migrations/*.sql; do
+            echo "migrating: $f"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
+      - run: cargo sqlx prepare --workspace --check -- --locked
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: cargo-deny@0.19.9,cargo-audit@0.22.2
+      - run: cargo deny check
+      - run: cargo audit
+
+  fuzz:
+    # S22: every fuzz target runs for 30 seconds on every pull request that touches Rust (the fuzz crates are outside the
+    # workspace, so `fuzz-smoke` covers only the domain targets and each crate has a recipe of its own, plan 09 A31). Each recipe
+    # first checks that its fuzz crate's lockfile is complete and passes cargo deny and cargo audit.
+    name: fuzz ${{ matrix.recipe }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        recipe:
+          - fuzz-smoke
+          - agent-fuzz
+          - identity-fuzz
+          - platform-fuzz
+          - engine-fuzz
+          - registry-fuzz
+          - mcp-fuzz
+          - writes-fuzz
+          - hub-fuzz
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      # hub-fuzz builds the whole hub (the largest dependency graph of the matrix) next to the nightly toolchain and cargo-fuzz, on the runner's
+      # root disk. The same two steps as the test job of rust.yml (main's PR 25 added them after `cargo test --workspace` ran out of disk).
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just@1.40.0,cargo-deny@0.19.9,cargo-audit@0.22.2
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+      - name: Install the fuzz toolchain and cargo-fuzz (the versions of the Justfile)
+        run: |
+          set -euo pipefail
+          nightly="$(just --evaluate fuzz_nightly)"
+          rustup toolchain install "$nightly" --profile minimal
+          cargo "+$nightly" install --locked cargo-fuzz --version "$(just --evaluate cargo_fuzz_version)"
+      - name: Fuzz
+        env:
+          RECIPE: ${{ matrix.recipe }}
+        run: just "$RECIPE"
+      - name: Disk left
+        if: always()
+        run: df -h /

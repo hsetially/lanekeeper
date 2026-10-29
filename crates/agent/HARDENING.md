@@ -20,9 +20,11 @@ Values in `<angle brackets>` or marked "from values" are the chart's to fill in.
 
 ## The image
 
-- **Base:** `gcr.io/distroless/cc-debian12:nonroot`: glibc, libgcc and CA certificates. No shell, no package manager,
-  nothing to `exec` into (S16, S17). The agent starts no process itself (`no_shell_or_exec_in_source`).
-- **Pinned by digest**, here and for the Rust builder. The digests were read from the registries on 2026-10-10; Renovate
+- **Base:** `gcr.io/distroless/cc-debian13:nonroot`: glibc, libgcc and CA certificates. No shell, no package manager,
+  nothing to `exec` into (S16, S17). The agent starts no process itself (`no_shell_or_exec_in_source`). Debian 13 because
+  `cc-debian12` is deprecated and carries critical findings that will not be fixed (plan 09 A32).
+- **Pinned by digest**, here and for the Rust builder (`rust:1.88.0-trixie`, the same Debian release, so the glibc the
+  binary is linked against is the one it runs on). The digests were read from the registries on 2026-10-25; Renovate
   proposes new ones, and a person reviews them.
 - **One file:** `/usr/local/bin/agent`, built with `cargo build --release --locked -p agent`, so the versions are the ones
   `cargo deny` and `cargo audit` checked.

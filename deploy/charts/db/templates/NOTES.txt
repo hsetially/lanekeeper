@@ -1,0 +1,2 @@
+lanekeeper-db {{ .Release.Name }}: a CloudNativePG cluster of 3 instances in {{ .Release.Namespace }}.
+Before it can start, two Secrets must exist (never in Git, plan 09 A7): {{ .Values.secrets.migratorSecretName }} and {{ .Values.secrets.appSecretName }}. See deploy/charts/db/README.md.

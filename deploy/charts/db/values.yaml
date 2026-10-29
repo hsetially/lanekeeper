@@ -1,0 +1,68 @@
+# Defaults for the db chart (09/T5). Hardened by default: nothing here loosens S6, S10 or S18. The fields without a usable default (the
+# image digest, the environment, and for backups the bucket and the Google service account) must be set by the values file of the
+# environment (deploy/values/db/<env>.yaml); the chart refuses to render without them. The cluster's name is not a value: the hub's
+# NetworkPolicy and the policies name it.
+
+image:
+  repository: ghcr.io/cloudnative-pg/postgresql
+  # For the reader: the tag the digest was read from. The digest decides what runs; a tag is never deployed (S19).
+  tag: ""
+  # sha256:<64 hex digits>. Required.
+  digest: ""
+
+# kind, staging or prod. Required. What is required depends on it: kind has no Google, so no zones, no backups and no customer-managed
+# key, and says so (the labels, the annotations and the policy's warnings).
+environment: ""
+
+# The names of the Secrets that are made once per environment by a runbook step and never kept in Git (plan 09 A7). Both are of type
+# kubernetes.io/basic-auth. appSecretName is also what the hub reads its connection string from (charts/hub database.credentialsSecretName).
+secrets:
+  migratorSecretName: lanekeeper-db-migrator
+  appSecretName: lanekeeper-db-app
+
+storage:
+  size: 20Gi
+  # A Cloud KMS key, projects/P/locations/L/keyRings/R/cryptoKeys/K (S10). With it the chart renders a StorageClass that encrypts the
+  # disks with it. Without it the volumes use the cluster's default class, which is Google-managed encryption, and the policy warns
+  # (plan 09 A11b, Q29); render.sh fails that warning for prod and staging.
+  cmekKey: ""
+  diskType: pd-ssd
+  # Only used without cmekKey.
+  fallbackClassName: standard-rwo
+
+# A placeholder until the load test of prompt 16 measures the database at design scale (40 swimlanes, 2,000 files each).
+resources:
+  requests:
+    cpu: "1"
+    memory: 2Gi
+  limits:
+    cpu: "2"
+    memory: 2Gi
+
+postgresql:
+  # A quarter of the memory limit. The only tuning parameter: the planner's costs are left alone, because the plans in the registry's
+  # tests (D124) were taken with the defaults.
+  sharedBuffers: 512MB
+
+# zone: the instances must be in different zones (D62). kind: one zone, so the instances only prefer different hosts, and the policy
+# warns every time (plan 09 A13). Never use kind outside kind.
+topology:
+  mode: zone
+
+# Backups to Google Cloud Storage with barman, through Workload Identity (D29, D40, S7): no key file. Required except in kind.
+backup:
+  enabled: true
+  # The bucket of charts/gcp buckets.backup.name, and the path inside it.
+  bucket: ""
+  path: lanekeeper-db
+  # Six fields, seconds first: every day at 02:00 UTC.
+  schedule: "0 0 2 * * *"
+
+serviceAccount:
+  # The Google service account that Workload Identity maps the cluster's Kubernetes service account (named after the cluster) to
+  # (charts/gcp makes lanekeeper-db@PROJECT). Required with backups.
+  gcpServiceAccount: ""
+
+network:
+  # The namespace of the CloudNativePG operator, which must reach every instance on 8000 and 5432 (CloudNativePG, Networking).
+  operatorNamespace: cnpg-system

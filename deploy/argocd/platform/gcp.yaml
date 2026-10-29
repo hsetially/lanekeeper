@@ -1,0 +1,36 @@
+# The Google Cloud resources, in the platform cluster's Argo CD (09/T6; plan 09 A4): Config Connector resources from deploy/charts/gcp with
+# the prod values, and GitHub's webhook ranges for Cloud Armor, which are generated and not typed (deploy/tools/github-hook-ranges.mjs).
+# Config Connector is installed in the cluster beforehand (deploy/argocd/README.md).
+#
+# No prune: a resource that leaves Git is not deleted from the project by a sync. The buckets, the admission policy and the attestor also
+# carry Prune=false and deletion-policy: abandon themselves. This Application renders only once the ranges file is resolved (plan 09
+# blockers, B5) and the environment's values have the public key of the CI signing key (charts/gcp, binaryAuthorization). See hub.yaml
+# for the placeholder revision.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: lanekeeper-gcp
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: lanekeeper
+    lanekeeper.io/environment: prod
+spec:
+  project: lanekeeper-cloud
+  source:
+    repoURL: https://github.com/hsetially/lanekeeper
+    targetRevision: "0000000000000000000000000000000000000000"
+    path: deploy/charts/gcp
+    helm:
+      releaseName: lanekeeper-gcp
+      valueFiles:
+        - ../../values/hub/github-hook-ranges.yaml
+        - ../../values/gcp/prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: lanekeeper-gcp
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

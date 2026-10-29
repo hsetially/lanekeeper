@@ -1,0 +1,60 @@
+# The contracts (09/T2; S4, S19): the protobuf lint with buf, the OpenAPI lint with redocly, and the migrations and database roles
+# on Postgres 16 with pgvector. The recipes are the ones of `just verify-01`; the Rust tests behind them also run in rust.yml, so
+# this workflow is the quick answer for a pull request that only changes a contract file. buf and redocly come from the root
+# package.json and pnpm-lock.yaml, at the pinned versions.
+name: contracts
+on:
+  pull_request:
+    paths:
+      - "proto/**"
+      - "api/**"
+      - "db/**"
+      - "deploy/dev/**"
+      - "crates/domain/**"
+      - "crates/ports/**"
+      - "crates/proto/**"
+      - "crates/xtask/**"
+      - "docs/mcp-tools.md"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".redocly.yaml"
+      - "Justfile"
+      - ".github/workflows/contracts.yml"
+      - ".github/actions/docker-hub-mirror/**"
+  push:
+    branches: [main]
+permissions: {}
+concurrency:
+  group: contracts-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "3"
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      # db-verify starts Postgres through testcontainers, which pulls from Docker Hub.
+      - uses: ./.github/actions/docker-hub-mirror
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just@1.40.0
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: just proto-verify openapi-verify db-verify

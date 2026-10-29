@@ -1,11 +1,79 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests", "docker:pinDigests"],
   "minimumReleaseAge": "14 days",
   "internalChecksFilter": "strict",
+  "automerge": false,
+  "dependencyDashboard": true,
+  "ignorePaths": ["**/node_modules/**", ".github/scripts/fixtures/**", "deploy/policy/testdata/**"],
   "packageRules": [
     { "matchManagers": ["cargo"], "groupName": "rust dependencies" },
     { "matchManagers": ["npm"], "groupName": "web dependencies" },
-    { "matchFileNames": ["crates/domain/**", "crates/ports/**", "proto/**", "api/**", "db/**"], "automerge": false, "labels": ["contract-change"] }
+    { "matchManagers": ["github-actions"], "groupName": "github actions" },
+    { "matchDatasources": ["docker"], "groupName": "docker images and digests" },
+    { "matchManagers": ["helmv3", "helm-values", "helmfile", "kubernetes"], "groupName": "helm and kubernetes" },
+    {
+      "description": "The sentinel's RPM is tested on Rocky Linux 8.9 and 8.10 exactly (deploy/sentinel/tests/install.sh, 09/T8). Those minor releases are the targets, so a newer tag is a decision and not an update.",
+      "matchPackageNames": ["docker.io/rockylinux/rockylinux"],
+      "enabled": false
+    },
+    {
+      "description": "CloudNativePG moves as one: the operator image (tag and digest), the version and the manifest URL of deploy/tests/kind/pins.env. Renovate cannot compute LK_CNPG_MANIFEST_SHA256, and the CRDs vendored in deploy/schemas and the db chart README name the version too, so the update waits for a person to approve it on the dependency dashboard and then finish it.",
+      "matchPackageNames": ["ghcr.io/cloudnative-pg/cloudnative-pg", "cloudnative-pg/cloudnative-pg"],
+      "groupName": "cloudnative-pg operator",
+      "dependencyDashboardApproval": true,
+      "automerge": false,
+      "prBodyNotes": [
+        "Renovate moved the operator image, LK_CNPG_VERSION and LK_CNPG_MANIFEST_URL of deploy/tests/kind/pins.env. A person still has to: set LK_CNPG_MANIFEST_SHA256 to the sha256 of the new manifest (curl -fsSL \"$LK_CNPG_MANIFEST_URL\" | sha256sum; run.sh refuses a manifest whose hash differs); re-vendor the CRDs in deploy/schemas (their lock must agree); and update the version that deploy/charts/db/README.md names. .github/scripts/consistency.test.mjs fails until the README agrees."
+      ]
+    },
+    {
+      "description": "Contract paths change only through a contract-change PR that a human approves (AGENTS.md, Ownership): never merge by itself, and say so.",
+      "matchFileNames": [
+        "crates/domain/**",
+        "crates/ports/**",
+        "crates/proto/**",
+        "proto/**",
+        "api/**",
+        "db/migrations/**",
+        "docs/mcp-tools.md",
+        "perf/budgets.toml",
+        "design/handoff/**"
+      ],
+      "automerge": false,
+      "labels": ["contract-change"]
+    }
+  ],
+  "customManagers": [
+    {
+      "description": "The tool images that the scripts run, pinned by digest in deploy/images/tools.env, and the node image and the CloudNativePG operator image of the kind test in deploy/tests/kind/pins.env (tag and digest move together).",
+      "customType": "regex",
+      "managerFilePatterns": ["/^deploy/images/tools\\.env$/", "/^deploy/tests/kind/pins\\.env$/"],
+      "matchStrings": [
+        "LK_[A-Z0-9_]+_IMAGE=(?<depName>[a-z0-9.-]+(?:/[a-z0-9._-]+)+):(?<currentValue>[A-Za-z0-9._-]+)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "description": "CloudNativePG's version in deploy/tests/kind/pins.env. Renovate sees a new release; the sha256 of its manifest and the vendored CRDs are a person's (see the packageRule for the operator).",
+      "customType": "regex",
+      "managerFilePatterns": ["/^deploy/tests/kind/pins\\.env$/"],
+      "matchStrings": ["LK_CNPG_VERSION=(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "cloudnative-pg/cloudnative-pg",
+      "extractVersionTemplate": "^v(?<version>.+)$"
+    },
+    {
+      "description": "The release manifest's URL names the version twice (the tag and the file), so the whole line is rebuilt.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^deploy/tests/kind/pins\\.env$/"],
+      "matchStrings": [
+        "LK_CNPG_MANIFEST_URL=https://github\\.com/cloudnative-pg/cloudnative-pg/releases/download/v(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)/cnpg-[0-9]+\\.[0-9]+\\.[0-9]+\\.yaml"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "cloudnative-pg/cloudnative-pg",
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "autoReplaceStringTemplate": "LK_CNPG_MANIFEST_URL=https://github.com/cloudnative-pg/cloudnative-pg/releases/download/v{{{newValue}}}/cnpg-{{{newValue}}}.yaml"
+    }
   ]
 }

@@ -1,0 +1,18 @@
+{{- if eq (include "lanekeeper-db.backup" .) "true" }}
+# One base backup a day (D40); the WAL is archived all the time by the cluster itself.
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: lanekeeper-db-daily
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-db.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  cluster:
+    name: lanekeeper-db
+  method: barmanObjectStore
+  backupOwnerReference: self
+  # The first one at once, so that a cluster with a mistake in its backups shows it on the day it is made, not the next night.
+  immediate: true
+{{- end }}

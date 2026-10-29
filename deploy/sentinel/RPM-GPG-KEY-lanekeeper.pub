@@ -1,0 +1,11 @@
+# UNRESOLVED (plan 09 blockers, B13). This is not a key.
+#
+# The release key of the Lanekeeper RPMs does not exist yet. Its private half lives in Secret Manager and is read only by the protected
+# `release` job of .github/workflows/sentinel.yml through Workload Identity Federation (plan 09 A16; no key is stored in the repository
+# or in the runner). A person makes the key, stores its private half there, and puts the PUBLIC half in this file:
+#
+#     deploy/sentinel/sign.sh new-release-key --out RPM-GPG-KEY-lanekeeper.pub     # prints the secret key on stdout, once
+#
+# Until then the release job refuses to sign, because the key it was given cannot be compared with a committed fingerprint, and pull
+# requests are signed with a throwaway key made for that run (and verified with it). Nothing here may be replaced by a key from anywhere
+# else: the fingerprint in this file is what config management trusts.

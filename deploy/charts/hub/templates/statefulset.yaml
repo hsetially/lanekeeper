@@ -1,0 +1,232 @@
+{{- /* Hostile values must not become manifests: these stop the render before anything is written. */ -}}
+{{- $image := include "lanekeeper-hub.image" . -}}
+{{- $_ := include "lanekeeper-hub.requireSettings" . -}}
+{{- $origin := include "lanekeeper-hub.origin" . -}}
+{{- $c := .Values.config -}}
+{{- if and .Values.storage.cmekKey (not (regexMatch "^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+$" .Values.storage.cmekKey)) -}}
+{{- fail "storage.cmekKey must be projects/<project>/locations/<location>/keyRings/<ring>/cryptoKeys/<key>" -}}
+{{- end -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: lanekeeper-hub
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-hub.labels" . | nindent 4 }}
+  {{- if eq .Values.topology.mode "kind" }}
+  annotations:
+    # kind has one zone (plan 09 A13). The policy requires this marker for the weaker spread, and warns about it.
+    lanekeeper.io/topology: kind
+  {{- end }}
+spec:
+  # Three replicas, each with its own mirror volume (D62). Not a value: topology.rego fails any other number.
+  replicas: 3
+  serviceName: lanekeeper-hub-replicas
+  # The replicas are peers; none waits for another to start.
+  podManagementPolicy: Parallel
+  # A mirror is a cache of Git; deleting the set or scaling it down does not delete the volumes by itself.
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  selector:
+    matchLabels:
+      {{- include "lanekeeper-hub.podLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "lanekeeper-hub.podLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      # No token (S16); Workload Identity needs none.
+      automountServiceAccountToken: false
+      # Service links put the name of every Service into the environment.
+      enableServiceLinks: false
+      # The contract's 45 s: longer than the hub's grace (5 s) and drain (25 s) by 10 s. The chart refuses tunables that break that.
+      terminationGracePeriodSeconds: {{ include "lanekeeper-hub.terminationGracePeriodSeconds" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . | quote }}
+        {{- end }}
+      {{- end }}
+      securityContext:
+        {{- include "lanekeeper-hub.podSecurityContext" . | nindent 8 }}
+      affinity:
+        podAntiAffinity:
+          {{- if eq .Values.topology.mode "kind" }}
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "lanekeeper-hub.selectorLabels" . | nindent 20 }}
+                topologyKey: kubernetes.io/hostname
+          {{- else }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "lanekeeper-hub.selectorLabels" . | nindent 18 }}
+              topologyKey: topology.kubernetes.io/zone
+          {{- end }}
+      containers:
+        - name: hub
+          image: {{ $image | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            {{- include "lanekeeper-hub.containerSecurityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          ports:
+            {{- include "lanekeeper-hub.ports" . | nindent 12 }}
+          # Start-up is budgeted at 10 s (P11); the window allows 60 s so that a slow node is not a crash loop. The hub binds all four
+          # sockets first but serves the operations socket last (crates/hub/src/process.rs, Sockets::bind and serve_hub): /healthz answers only when the whole start
+          # has finished, and a start that cannot reach the database, Secret Manager or KMS exits 1 on its own and restarts
+          # (CrashLoopBackOff). Once it answers, /healthz asks nothing of the database; /readyz does. Without the startup probe the
+          # liveness probe would judge a start that has not finished. LK_START_TIMEOUT_SECS is held to this window in _helpers.tpl.
+          startupProbe:
+            httpGet: {path: /healthz, port: ops}
+            periodSeconds: {{ include "lanekeeper-hub.startupProbePeriodSeconds" . }}
+            timeoutSeconds: 2
+            failureThreshold: {{ include "lanekeeper-hub.startupProbeFailureThreshold" . }}
+          livenessProbe:
+            httpGet: {path: /healthz, port: ops}
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: {path: /readyz, port: ops}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          env:
+            - name: LK_WEB_ADDR
+              value: 0.0.0.0:8443
+            - name: LK_OPS_ADDR
+              value: 0.0.0.0:9090
+            # The agent and replica listeners: the container ports of the contract.
+            - name: LK_AGENT_ADDR
+              value: 0.0.0.0:8444
+            - name: LK_REPLICA_ADDR
+              value: 0.0.0.0:8445
+            - name: LK_WEB_DIST
+              value: /app/web/dist
+            - name: LK_TRUSTED_PROXY_HOPS
+              value: {{ .Values.config.trustedProxyHops | toString | quote }}
+            # The database URL holds a password, so it is a mounted file and never a variable (S7).
+            - name: LK_DATABASE_URL_FILE
+              value: /etc/lanekeeper/db/uri
+            - name: LK_DB_CA_FILE
+              value: /etc/lanekeeper/db-ca/ca.crt
+            - name: LK_MIRROR_DIR
+              value: /var/lib/lanekeeper/mirror
+            {{- with .Values.config.otlpEndpoint }}
+            - name: LK_OTLP_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
+            # Names of Secret Manager secrets and Cloud KMS keys, and the project they are in: no secret is in the environment (S7).
+            - name: LK_GCP_PROJECT
+              value: {{ $c.gcpProject | quote }}
+            - name: LK_WEB_CERT_REF
+              value: {{ $c.secretManager.webCert | quote }}
+            - name: LK_WEB_KEY_REF
+              value: {{ $c.secretManager.webKey | quote }}
+            # This replica's own name, from the downward API: the one reference the contract allows in the environment. It is in the
+            # replica certificate's identity, in agent_connections and as the holder of every lease, so each replica has its own.
+            # Kubernetes expands $(NAME) only for variables defined earlier in the list, so it comes before the address built from it.
+            - name: LK_REPLICA_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # Where the other replicas dial this one: the pod's DNS name behind the headless Service, which is the name on its certificate.
+            - name: LK_REPLICA_ADDRESS
+              value: {{ printf "$(LK_REPLICA_NAME).lanekeeper-hub-replicas.%s.svc:8445" .Release.Namespace | quote }}
+            # The name the users type, from the Gateway's host name: the origin a request may name, and the audience of the agents' tokens.
+            - name: LK_PUBLIC_ORIGIN
+              value: {{ $origin | quote }}
+            - name: LK_HUB_AUDIENCE
+              value: {{ $origin | quote }}
+            - name: LK_AGENT_ENDPOINT_HOSTS
+              value: {{ join "," $c.agentEndpointHosts | quote }}
+            - name: LK_AGENT_CA_KMS_REF
+              value: {{ $c.kms.agentCa | quote }}
+            - name: LK_AGENT_CA_CERT_REF
+              value: {{ $c.secretManager.agentCaCert | quote }}
+            - name: LK_REPLICA_CA_KMS_REF
+              value: {{ $c.kms.replicaCa | quote }}
+            - name: LK_REPLICA_CA_CERT_REF
+              value: {{ $c.secretManager.replicaCaCert | quote }}
+            - name: LK_GIT_BASE_URL
+              value: {{ $c.git.baseUrl | quote }}
+            - name: LK_GIT_TENANT_URL
+              value: {{ $c.git.tenantUrl | quote }}
+            - name: LK_GIT_BASE_REPO
+              value: {{ $c.git.baseRepo | quote }}
+            - name: LK_GIT_TENANT_REPO
+              value: {{ $c.git.tenantRepo | quote }}
+            - name: LK_ENTRA_TENANT_ID
+              value: {{ $c.entra.tenantId | quote }}
+            - name: LK_ENTRA_CLIENT_ID
+              value: {{ $c.entra.clientId | quote }}
+            - name: LK_ENTRA_CLIENT_AUTH_REF
+              value: {{ $c.secretManager.entraClient | quote }}
+            - name: LK_ENTRA_COOKIE_KEY_REF
+              value: {{ $c.secretManager.loginCookie | quote }}
+            - name: LK_AUDIT_CHECKPOINT_BUCKET
+              value: {{ $c.auditCheckpointBucket | quote }}
+            - name: LK_AUDIT_CHECKPOINT_KMS_REF
+              value: {{ $c.kms.auditCheckpoint | quote }}
+            - name: LK_VAULT_KMS_REF
+              value: {{ $c.kms.vault | quote }}
+            {{- if $c.bootstrapAdmins }}
+            - name: LK_BOOTSTRAP_ADMINS
+              value: {{ join "," $c.bootstrapAdmins | quote }}
+            {{- end }}
+            {{- range $name, $value := $c.tuning }}
+            - name: {{ $name }}
+              value: {{ include "lanekeeper-hub.scalar" $value | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: mirror
+              mountPath: /var/lib/lanekeeper/mirror
+            - name: db-credentials
+              mountPath: /etc/lanekeeper/db
+              readOnly: true
+            - name: db-ca
+              mountPath: /etc/lanekeeper/db-ca
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        # Only the connection URL of the Secret, readable by the group (0440): the Secret's other keys stay in the Secret.
+        - name: db-credentials
+          secret:
+            secretName: {{ .Values.database.credentialsSecretName }}
+            defaultMode: 288
+            items:
+              - key: uri
+                path: uri
+        # Only ca.crt of CloudNativePG's CA Secret, which also holds the key that signs server certificates (plan 09 A9).
+        - name: db-ca
+          secret:
+            secretName: {{ .Values.database.caSecretName }}
+            items:
+              - key: ca.crt
+                path: ca.crt
+  volumeClaimTemplates:
+    - metadata:
+        name: mirror
+        labels:
+          {{- include "lanekeeper-hub.podLabels" . | nindent 10 }}
+        {{- if not .Values.storage.cmekKey }}
+        annotations:
+          # Google-managed encryption, not a customer-managed key (S10, plan 09 A11b, Q29). The policy warns about it.
+          lanekeeper.io/cmek: fallback
+        {{- end }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ include "lanekeeper-hub.storageClassName" . }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.size }}

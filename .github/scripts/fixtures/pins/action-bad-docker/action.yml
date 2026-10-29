@@ -1,0 +1,5 @@
+name: bad docker action
+description: pulls an image by tag
+runs:
+  using: docker
+  image: docker://alpine:3.20

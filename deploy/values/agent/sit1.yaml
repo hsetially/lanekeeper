@@ -1,0 +1,54 @@
+# The agent of the swimlane sit1 (09/T4): a synthetic swimlane. Every value that names something of ours is a documentation or
+# example value until the question that decides it is answered, and says which: the digest (plan 09 A29: images.yml prints it
+# after the first publish), the project, cluster and Google service account (the GCP projects are not named yet), the hub's address
+# and the API server's (Q1), the NFS export (Q11). Documentation addresses only (RFC 5737); no real tenant or cluster data (rule 12).
+# The hub's CA certificate is not here: it is the public certificate of the hub's agent CA, put in by whoever adds the swimlane
+# (deploy/ADDING-A-SWIMLANE.md), or passed with --set-file hubCa.pem=ca.pem.
+image:
+  repository: ghcr.io/hsetially/lanekeeper/agent
+  # PLACEHOLDER, 64 zeros: it cannot be pulled, and the images policy warns about it. Replace with the published digest (A29).
+  digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+swimlane:
+  id: sit1
+  # EXAMPLE names.
+  cluster: example-sit-cluster
+  project: example-project
+
+hub:
+  # EXAMPLE host name of the hub's agent load balancer (Q1), which hubAddresses below resolves to. Not the users' host (Q2).
+  endpoint: https://agents.lanekeeper-prod.example.com
+  # EXAMPLE. The audience the agent asks Google for a token for is the hub's own name, https://<the hub's gateway.hostname>
+  # (LK_HUB_AUDIENCE, which charts/hub derives from gateway.hostname), not the agents' host: the hub refuses every Join whose token is for
+  # another audience. deploy/tests/render.sh contract checks that the two agree.
+  audience: https://lanekeeper-prod.example.com
+
+configServer:
+  # Where the swimlane's config-server runs (a human decision, 2026-10-28): latest-pci, which is not the agent's namespace. The egress rule
+  # and LK_CONFIG_SERVER_URL name it. The service is the default, csp-configuration-server.
+  namespace: latest-pci
+
+nfs:
+  # EXAMPLE address and path (Q11); the uid and gid are the defaults, 1010 (Q4).
+  server: 192.0.2.10
+  exportPath: /export/csp-configuration
+
+namespaces:
+  - sit1
+
+spool:
+  size: 1Gi
+  # EXAMPLE key (Q29): the Cloud KMS key that encrypts the spool's disk. The swimlane's project needs the grant described in
+  # deploy/ADDING-A-SWIMLANE.md before the claim can be bound.
+  cmekKey: projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/lanekeeper-disk-sit1
+
+serviceAccount:
+  # EXAMPLE service account (Q26).
+  gcpServiceAccount: lanekeeper-agent-sit1@example-project.iam.gserviceaccount.com
+
+network:
+  # EXAMPLE addresses (Q1): the hub's agent load balancer, and the cluster's control-plane endpoint.
+  hubAddresses:
+    - 203.0.113.10/32
+  kubeApiAddresses:
+    - 198.51.100.2/32

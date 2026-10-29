@@ -1,0 +1,58 @@
+{{- if .Values.cloudArmor.enabled }}
+{{- $project := required "project is required: the Google Cloud project of the Config Connector resources" .Values.project -}}
+{{- $users := .Values.cloudArmor.usersRanges -}}
+{{- $hooks := .Values.cloudArmor.githubHookRanges -}}
+{{- include "lanekeeper-gcp.requireRanges" (list "cloudArmor.usersRanges" $users) -}}
+{{- if not $hooks -}}
+{{- fail "cloudArmor.githubHookRanges is empty: GitHub's webhooks would be denied (P2, Q28). Run `node deploy/tools/github-hook-ranges.mjs --write` and commit deploy/values/hub/github-hook-ranges.yaml" -}}
+{{- end -}}
+{{- include "lanekeeper-gcp.requireRanges" (list "cloudArmor.githubHookRanges" $hooks) -}}
+# The Cloud Armor policy of the users' load balancer (S18, D25), attached to the hub's web Service by its GCPBackendPolicy:
+#   1000..  users: the GlobalProtect egress ranges (Q2), any path;
+#   2000..  GitHub's webhook ranges (Q28), on the exact path /hooks/github and nowhere else;
+#   2147483647  the default rule: deny.
+# A rule matches ten address ranges, or four plus the path (an expression has five sub-expressions at most), so longer lists are
+# split into several rules. network.rego checks the rendering: the hooks expression must be exactly this shape, GitHub's ranges
+# may not appear in any other rule, and the default must deny.
+apiVersion: compute.cnrm.cloud.google.com/v1beta1
+kind: ComputeSecurityPolicy
+metadata:
+  name: {{ .Values.cloudArmor.policyName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-gcp.labels" . | nindent 4 }}
+  annotations:
+    cnrm.cloud.google.com/project-id: {{ $project | quote }}
+spec:
+  type: CLOUD_ARMOR
+  description: Lanekeeper users and GitHub webhooks, default deny
+  rule:
+    {{- range $i, $start := untilStep 0 (len $users) 10 }}
+    - action: allow
+      priority: {{ add 1000 $i }}
+      description: "Users: GlobalProtect egress ranges (Q2)"
+      match:
+        versionedExpr: SRC_IPS_V1
+        config:
+          srcIpRanges:
+            {{- range slice $users $start (min (add $start 10) (len $users)) }}
+            - {{ . | quote }}
+            {{- end }}
+    {{- end }}
+    {{- range $i, $start := untilStep 0 (len $hooks) 4 }}
+    - action: allow
+      priority: {{ add 2000 $i }}
+      description: "GitHub webhooks, only /hooks/github (Q28)"
+      match:
+        expr:
+          expression: {{ include "lanekeeper-gcp.hooksExpression" (slice $hooks $start (min (add $start 4) (len $hooks))) | quote }}
+    {{- end }}
+    - action: deny(403)
+      priority: 2147483647
+      description: "Default rule: deny"
+      match:
+        versionedExpr: SRC_IPS_V1
+        config:
+          srcIpRanges:
+            - "*"
+{{- end }}

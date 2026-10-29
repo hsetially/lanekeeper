@@ -1,0 +1,22 @@
+name: bad-bench-flags
+on:
+  push:
+    branches: [main]
+permissions: {}
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - run: cargo bench --workspace --benches --locked -- --baseline-lenient main
+      - run: cargo bench --workspace -- --save-baseline main
+      - run: cargo +stable bench --workspace --all-targets -- --save-baseline main
+      - run: cargo bench -p engine --lib -- --save-baseline x
+      - run: just agent-fixtures && cargo bench --workspace --benches -- --save-baseline main
+      - run: |
+          cargo bench --workspace \
+            --benches \
+            -- --save-baseline main
+      - run: cargo bench -p hub --bin hub --bench '*' -- --save-baseline x

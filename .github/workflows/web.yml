@@ -1,0 +1,64 @@
+# The web app and the lockfile scan (09/T2; S19). The app: lint, type check, unit tests and the production build, whose last step
+# is the bundle gate (P10, 250 KB of gzip). The browser tests and Lighthouse stay in web-e2e.yml (plan 09 A21). osv-scanner reads
+# every lockfile of the repository, the Rust ones (the workspace and the fuzz crates) as well as the pnpm ones, so the paths
+# below include them and a change to Cargo.lock starts this workflow too.
+name: web
+on:
+  pull_request:
+    paths:
+      - "web/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "Cargo.lock"
+      - "**/Cargo.lock"
+      - "Justfile"
+      - ".github/workflows/web.yml"
+  push:
+    branches: [main]
+permissions: {}
+concurrency:
+  group: web-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test --run
+      - run: pnpm build
+
+  osv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just@1.40.0
+      - run: just ops-tools-install osv-scanner
+      - run: just osv-scan

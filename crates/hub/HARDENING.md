@@ -6,9 +6,11 @@ and its policy test. `tests/hardening.rs` reads the YAML blocks below, so the fi
 apart:
 
 - `hub_dockerfile_is_hardened`: a distroless final image, a numeric non-root user, every base image pinned by digest, no
-  shell, no package manager, and only two things copied in (the binary and `web/dist`).
+  shell, no package manager, and only three things copied in (the binary, `web/dist` and the embedding model checked
+  against `deploy/images/hub-model.lock`).
 - `hardening_md_pod_contract_is_complete`: the Pod block below has every control S16 lists, mounts nothing writable except
-  the mirror volume and `/tmp`, mounts no service-account token, and passes only variables that `src/config.rs` reads.
+  the mirror volume and `/tmp`, mounts no service-account token, mounts each database Secret through the one key the hub
+  needs, and passes only variables that `src/config.rs` reads.
 - `hardening_md_network_policy_denies_by_default_and_lists_only_allowed_egress`: the NetworkPolicy blocks allow exactly the
   destinations S18 names, and ingress exactly the four listeners from exactly their callers.
 - `hardening_lint_rejects_planted_violations`: each of those checks is shown to refuse a manifest that breaks it.
@@ -16,17 +18,27 @@ apart:
 The checklist that the chart and the install guide are matched against, in one place and in the order of a first deployment, is the last
 section of `README.md`; this file is the detail behind it.
 
-Values in `<angle brackets>` or marked "from values" are the chart's to fill in. The documentation addresses
-(`203.0.113.0/24`, `198.51.100.0/24`) stand for the real load-balancer ranges.
+Values in `<angle brackets>` or marked "from values" are the chart's to fill in. `198.51.100.0/24` is a documentation
+address that stands for the real source ranges of the agents (the clusters' outbound IPs, Q1). `35.191.0.0/16` and
+`130.211.0.0/22` are real: they are where Google's load balancers, proxies and health checks come from (plan 09 A10).
 
 ## The image
 
-- **Base:** `gcr.io/distroless/cc-debian12:nonroot`: glibc, libgcc and CA certificates. No shell, no package manager,
-  nothing to `exec` into (S16).
-- **Pinned by digest**, all three bases. Renovate proposes new digests, and a person reviews them.
-- **Two things in it:** `/usr/local/bin/hub`, built with `cargo build --release --locked -p hub`, and `/app/web/dist`, the
-  web app built with `pnpm install --frozen-lockfile && pnpm build`. The hub refuses to start when `index.html` has no
-  `__CSP_NONCE__` placeholder (the web build must emit it, prompt 08).
+- **Base:** `gcr.io/distroless/cc-debian13:nonroot`: glibc, libgcc and CA certificates. No shell, no package manager,
+  nothing to `exec` into (S16). Debian 13 because `cc-debian12` is deprecated and carries critical findings that will not
+  be fixed (plan 09 A32); the Rust builder (`rust:1.88.0-trixie`) is the same release.
+- **Pinned by digest**, every base and the Dockerfile frontend. Renovate proposes new digests, and a person reviews them.
+- **Three things in it:**
+  - `/usr/local/bin/hub`, built with `cargo build --release --locked -p hub` (dependencies first, through cargo-chef);
+  - `/app/web/dist`, the web app built with `pnpm install --frozen-lockfile && pnpm build`. The hub refuses to start when
+    `index.html` has no `__CSP_NONCE__` placeholder (the web build must emit it, prompt 08);
+  - `/app/models/<model>/`, the embedding model's files (D53; plan 09 A3: `bge-small-en-v1.5`, the ONNX graph and its
+    tokenizer files). The `model` stage fetches each file named in `deploy/images/hub-model.lock` from the pinned Hugging
+    Face commit and stops the build unless its size and sha256 match. The files are read-only to the hub's user; the
+    embedding code (prompt 14) is pointed at this directory and never downloads a model at run time.
+- **Reproducible:** `deploy/images/build.sh hub` builds it from `git archive HEAD` with `SOURCE_DATE_EPOCH` and rewritten
+  timestamps, and `just images-repro` checks that two builds of a commit give one digest
+  (`deploy/images/REPRODUCIBILITY.md`).
 - **User:** `USER 65532:65532`, numeric.
 
 ## The pods
@@ -34,7 +46,9 @@ Values in `<angle brackets>` or marked "from values" are the chart's to fill in.
 Three replicas (D62), each its own pod with its own mirror volume and a stable DNS name through the headless service, which
 is how replicas find one another (`agent_connections.replica_address`). One container, no sidecars. The hub does not talk to
 the Kubernetes API, so it mounts no service-account token; Workload Identity reaches Google through the metadata server.
-The chart renders this pod as a StatefulSet template.
+The chart renders this pod as a StatefulSet template: the `mirror` volume below is the set's `volumeClaimTemplate`, so each
+replica gets its own claim (`mirror-lanekeeper-hub-0`, `-1`, `-2`), on a StorageClass that encrypts with a customer-managed key
+(S10), and the replicas are kept in different zones (D62).
 
 **Ports.** `web` 8443 (HTTPS, behind the users' load balancer), `agent` 8444 (agents and the NFS sentinel, mTLS), `replica`
 8445 (replica-to-replica, mTLS), `ops` 9090 (plain HTTP: `/healthz`, `/readyz`, `/metrics`, cluster-internal). `LK_AGENT_ADDR` and
@@ -42,7 +56,9 @@ The chart renders this pod as a StatefulSet template.
 
 **Secrets are files, not variables.** The database URL holds a password, so it is read from a mounted Secret file
 (`LK_DATABASE_URL_FILE`); no variable in this contract takes its value from a Secret reference, and none has a name that
-suggests a secret. Everything else secret comes from Secret Manager at run time (S7).
+suggests a secret. Everything else secret comes from Secret Manager at run time (S7). Each Secret is mounted through the one
+key the hub needs (`items`): the credentials Secret only `uri`, not the user name or the password it also holds; and
+CloudNativePG's CA Secret only `ca.crt`, because it also holds `ca.key`, which signs server certificates (S6, plan 09 A9).
 
 ```yaml
 apiVersion: v1
@@ -83,6 +99,11 @@ spec:
     - {name: agent, containerPort: 8444, protocol: TCP}
     - {name: replica, containerPort: 8445, protocol: TCP}
     - {name: ops, containerPort: 9090, protocol: TCP}
+    startupProbe:
+      httpGet: {path: /healthz, port: ops}
+      periodSeconds: 2
+      timeoutSeconds: 2
+      failureThreshold: 30
     livenessProbe:
       httpGet: {path: /healthz, port: ops}
       periodSeconds: 10
@@ -123,7 +144,7 @@ spec:
       valueFrom:
         fieldRef: {fieldPath: metadata.name}
     - name: LK_REPLICA_ADDRESS
-      value: $(LK_REPLICA_NAME).lanekeeper-hub.lanekeeper.svc:8445
+      value: $(LK_REPLICA_NAME).lanekeeper-hub-replicas.lanekeeper.svc:8445
     - name: LK_HUB_AUDIENCE
       value: https://<hub hostname>
     - name: LK_AGENT_ENDPOINT_HOSTS
@@ -179,10 +200,31 @@ spec:
   - name: mirror
     persistentVolumeClaim: {claimName: lanekeeper-hub-mirror}
   - name: db-credentials
-    secret: {secretName: lanekeeper-db-app, defaultMode: 288}
+    secret:
+      secretName: lanekeeper-db-app
+      defaultMode: 288
+      items:
+      - {key: uri, path: uri}
   - name: db-ca
-    secret: {secretName: lanekeeper-db-ca}
+    secret:
+      secretName: lanekeeper-db-ca
+      items:
+      - {key: ca.crt, path: ca.crt}
 ```
+
+**Probes.** Start-up is budgeted at 10 s (P11), and the startup probe allows 60 s (30 tries, 2 s apart) so that a slow node is
+not a crash loop. It asks `/healthz`. The hub binds all four sockets before it loads anything (`Sockets::bind` in `process.rs`: web,
+operations, agent, replica, in that order) but serves the operations socket last (`serve_hub`), so `/healthz` answers only when the
+whole start has finished: the database connected and its schema checked, the web certificate
+loaded and both CAs set up (in parallel), then the platform, sign-in, the audit checkpoint verifier, the write paths and the MCP
+server, six steps in a row that are each bounded by `LK_START_TIMEOUT_SECS` (8). A start that cannot reach the database, Secret
+Manager or KMS is therefore not a probe that fails but an exit 1 and a restart, with the step named in the log, and the chart
+refuses a `LK_START_TIMEOUT_SECS` for which six steps in a row would outlast the 60 s. Once it answers, `/healthz` asks nothing of
+the database or of anything else (it says that the process is up), so a database outage after the start never fails it and never
+restarts the pod; the liveness probe does not begin until the start has succeeded. `/readyz` is readiness only (`postgres`, `schema`,
+`certificates` held by the web, agent and replica listeners, the event bus's `LISTEN` connection as `events`, `mirrors`, the job runner as
+`jobs`, and the background `tasks`: the seven checks of `README.md`, item 11), and it is also what the users' load balancer's health check
+asks.
 
 `LK_TRUSTED_PROXY_HOPS` is 2 behind Google's external HTTPS load balancer, which appends the client address and then its own
 (`client_ip.rs` counts from the right). The value must be re-checked whenever the path to the hub changes.
@@ -380,6 +422,10 @@ The Job's variables are the Job's alone. `tests/hardening.rs` fails if the hub p
 `LK_MIGRATE_TIMEOUT_SECS`, and its volume allowlist already refuses a pod that mounts a fifth volume, so the migrator's credential
 cannot be in a serving pod. How to run the command, and what it refuses, is in `README.md`.
 
+Both Jobs' pods carry the label `app.kubernetes.io/name: lanekeeper-hub-jobs`, not the hub's: the hub's NetworkPolicy selects the
+hub's label and would give a Job the hub's network (the other replicas, the metadata server, the external hosts), and the Jobs' own
+NetworkPolicy and the database's admission rule both select this label.
+
 ### The seed Job
 
 The rows that say which Google service account may join as which swimlane's agent, or as which NFS VM's sentinel, are written by
@@ -408,7 +454,26 @@ a mount other than the four above. `LK_SEED_TIMEOUT_SECS` is the Job's alone: `t
 a change of who may join, and is reviewed as one. It is validated (a service account must be a `*.gserviceaccount.com` address, in
 lower case: a person's address is refused), it never deletes, `--dry-run` shows the exact change first, and every changed row is one
 audit event with the SHA-256 of the file. The residual risk: the operator who ran the Job is not in the event (the actor is the
-component), so the hash and the Job's own record (who started it, from which `ConfigMap`) are how a change is traced to a person.
+component), and Argo CD, not a person, creates the Job. A change is traced to a person through the hash, the seed Job (its name
+carries a hash of its pod template, the revision and, for `seed.content`, the file; it names the `ConfigMap` it read, and carries
+the image) and the commit that moved the Application's `targetRevision`. The chart keeps the old Jobs, and the `ConfigMap`s it made
+(`argocd.argoproj.io/sync-options: Prune=false`), because the hub's Application prunes and the record would go with them; they
+accumulate by design, and a person removes the ones no longer needed.
+
+**The file is kept by the chart only for `seed.content`.** Where it comes from `seed.existingConfigMap` (staging and prod: the real
+file lives outside the repository, so a person makes the ConfigMap), the chart renders no ConfigMap, the Job's name hashes the
+ConfigMap's name and the revision and not the file, and nothing in the cluster holds the file except that ConfigMap. The record
+holds there only if the person keeps every version: each seed change is a new ConfigMap whose name ends with the revision (the
+chart refuses a name that does not), made with `kubectl create` and never edited, replaced or deleted in place, so that the old Job
+still points at the file it applied. Nothing alerts when one is edited or deleted.
+
+**A revision only moves forward, a revert included.** The old Job is kept and its name is a pure function of the pod template, the
+revision, the file and the tries, so a revision that is used again names a Job that has already run (when the image and the rest of the pod template are the same as then,
+as they are for a revert made soon after the change): Argo CD finds it complete and
+the Application `Synced`, `hub seed` does not run, and the hub keeps the rows of the later file while Git shows the earlier one.
+The rows decide who may join as a swimlane's agent (S5). A revert is a new revision with the old file, in a new ConfigMap. A
+template cannot see the revisions that came before, so the chart cannot refuse one that was used: `seed.revision` is a positive
+integer, and a reviewer of the pull request that changes it is the check.
 
 ### Where the hub writes
 
@@ -443,9 +508,12 @@ destinations.
 | `storage.googleapis.com` | 443/TCP | Cloud Storage: the audit-checkpoint writer puts each checkpoint in the locked bucket (`GcsCheckpointBucket::HOST`, S9). |
 | the Teams webhook host | 443/TCP | Notifications (Q9: the host depends on the answer). |
 
-In: the web port from the users' load balancer range, the agent port from the agent load balancer range, the replica port
-from the hub's own pods, and the operations port from the `monitoring` namespace. The kubelet's probes come from the node.
-The load balancers' own source-IP allowlists, and the GitHub hook ranges on the webhook path, are the chart's (S18, Q28).
+In: the web port from the users' load balancer, whose proxies come from Google's two ranges (the client address is checked by
+Cloud Armor, not here); the agent port from the agent load balancer's source ranges, which are the same list as the load
+balancer's own allowlist; the replica port from the hub's own pods; and the operations port from the `monitoring` namespace and
+from Google's two ranges, because the users' load balancer health-checks `/readyz` on it (plan 09 A10) and no other range may.
+The kubelet's probes come from the node. The load balancers' own source-IP allowlists, and the GitHub hook ranges on the
+webhook path, are the chart's (S18, Q28).
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -460,7 +528,8 @@ spec:
   policyTypes: [Ingress, Egress]
   ingress:
   - from:
-    - ipBlock: {cidr: 203.0.113.0/24}
+    - ipBlock: {cidr: 35.191.0.0/16}
+    - ipBlock: {cidr: 130.211.0.0/22}
     ports:
     - {protocol: TCP, port: 8443}
   - from:
@@ -477,6 +546,11 @@ spec:
     - namespaceSelector:
         matchLabels:
           kubernetes.io/metadata.name: monitoring
+    ports:
+    - {protocol: TCP, port: 9090}
+  - from:
+    - ipBlock: {cidr: 35.191.0.0/16}
+    - ipBlock: {cidr: 130.211.0.0/22}
     ports:
     - {protocol: TCP, port: 9090}
   egress:
@@ -543,9 +617,9 @@ spec:
 
 These stay open after the tests pass. Each is a residual risk in `docs/threat-model.md` (Hub platform section).
 
-- **The image build.** The Dockerfile has been linted and the digests were read from the registries, but whether
-  `docker build` succeeds, that `aws-lc-sys` compiles in the builder image, and that the binary runs on the distroless base
-  are shown by CI, not by the tests here.
+- **The image build.** The Dockerfile has been linted and the digests were read from the registries, but whether the build
+  succeeds, that `aws-lc-sys` compiles in the builder image, and that the binary runs on the distroless base are shown by
+  `deploy/images/build.sh` and CI (09/T1), not by the tests here.
 - **What the cluster enforces.** Whether the cluster's CNI enforces NetworkPolicy and FQDN policy at all is a property of
   the cluster. A cluster without enforcement ignores both policies; the chart's policy test (09) checks the rendering, not
   the cluster.

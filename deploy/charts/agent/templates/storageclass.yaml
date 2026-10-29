@@ -1,0 +1,21 @@
+{{- if .Values.spool.cmekKey }}
+# Encrypts the spool's disk with the customer-managed key (S10). The Compute Engine service agent of the cluster's project needs
+# cloudkms.cryptoKeyEncrypterDecrypter on the key (deploy/ADDING-A-SWIMLANE.md). Without a key the claim uses the cluster's default class
+# and the policy warns (plan 09 A11b, Q29).
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: lanekeeper-agent-cmek
+  labels:
+    {{- include "lanekeeper-agent.labels" . | nindent 4 }}
+provisioner: pd.csi.storage.gke.io
+parameters:
+  type: {{ .Values.spool.diskType }}
+  disk-encryption-kms-key: {{ .Values.spool.cmekKey | quote }}
+# The volume is made where the pod is, in its zone.
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+# The spool is a buffer of changes that the hub can recover by comparing roots (crates/agent/HARDENING.md): a claim that is deleted on
+# purpose frees its disk.
+reclaimPolicy: Delete
+{{- end }}

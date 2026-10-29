@@ -1,0 +1,22 @@
+name: bad-idtoken-chained
+on:
+  push:
+    branches: [main]
+permissions: {}
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: A compiler behind other words
+        run: |
+          set -euo pipefail
+          if [ -f Cargo.toml ]; then
+            sudo env RUSTFLAGS=-Dwarnings cargo +stable build --release
+          fi
+          (cd web && pnpm install --frozen-lockfile) && echo built
+          x="$(go build ./... 2>&1)"
+      - run: cd tools && yarn

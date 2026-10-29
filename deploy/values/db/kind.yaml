@@ -1,0 +1,30 @@
+# The database in kind (the kind job of images.yml, plan 09 T5). No Google: no zones, no backups, no customer-managed key (so the
+# policy warns, and says why). One cluster of three on the three workers.
+image:
+  tag: "16.15-202610050823-system-trixie"
+  # Read from ghcr.io on 2026-10-25 (the index digest of that tag). The same image as staging and prod, so that kind runs what they run.
+  digest: "sha256:c2a1806568615fbd1a675d772fc10641dbc33c10fef00a7b7ee2f2b6b8730af4"
+
+environment: kind
+
+topology:
+  mode: kind
+
+storage:
+  size: 2Gi
+  cmekKey: ""
+  fallbackClassName: standard
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 768Mi
+  limits:
+    cpu: "1"
+    memory: 768Mi
+
+postgresql:
+  sharedBuffers: 128MB
+
+backup:
+  enabled: false

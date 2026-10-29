@@ -1,0 +1,12 @@
+# The hub's CA certificate, which the agent pins (LK_HUB_CA_FILE). Public. A change restarts the agent (the checksum annotation of
+# the Deployment), because the agent reads the file once, at start.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lanekeeper-hub-ca
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-agent.labels" . | nindent 4 }}
+data:
+  ca.pem: |
+    {{- include "lanekeeper-agent.hubCa" . | nindent 4 }}

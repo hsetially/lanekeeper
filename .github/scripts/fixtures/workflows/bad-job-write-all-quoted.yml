@@ -1,0 +1,12 @@
+name: bad-job-write-all-quoted
+on:
+  push:
+    branches: [main]
+permissions: {}
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: 'write-all'
+    steps:
+      - run: true

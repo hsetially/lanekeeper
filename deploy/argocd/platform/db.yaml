@@ -1,0 +1,32 @@
+# The database, in the platform cluster's Argo CD (09/T6; D29, D40): a CloudNativePG cluster of three, from deploy/charts/db with the prod
+# values. The CloudNativePG operator is installed in the cluster beforehand (deploy/argocd/README.md).
+#
+# No prune: a database is never deleted because a file left Git. Removing it is a person's act in the cluster. See hub.yaml for the
+# placeholder revision.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: lanekeeper-db
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: lanekeeper
+    lanekeeper.io/environment: prod
+spec:
+  project: lanekeeper-workloads
+  source:
+    repoURL: https://github.com/hsetially/lanekeeper
+    targetRevision: "0000000000000000000000000000000000000000"
+    path: deploy/charts/db
+    helm:
+      releaseName: lanekeeper-db
+      valueFiles:
+        - ../../values/db/prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: lanekeeper
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

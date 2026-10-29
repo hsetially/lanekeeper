@@ -1,0 +1,24 @@
+name: bad-idtoken-cargo-install
+on:
+  push:
+    tags: ["v*"]
+permissions: {}
+jobs:
+  sign-release:
+    # The shape of sentinel.yml's sign-release before review round 1: the job that can mint the Workload Identity token compiles
+    # cargo-cyclonedx, so the build scripts and proc-macros of its dependencies run with the token one request away.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # Workload Identity Federation
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install cargo-cyclonedx (the SBOM of the crates in the binary)
+        run: |
+          set -euo pipefail
+          . deploy/images/tools.env
+          cargo install --locked cargo-cyclonedx --version "$LK_CARGO_CYCLONEDX_VERSION"
+      - name: Write the SBOM
+        run: deploy/sentinel/sbom.sh --rpm target/sentinel/signed/x.rpm

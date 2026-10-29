@@ -1,0 +1,272 @@
+{
+ "files": {
+  "crds/argoproj.io/application_v1alpha1.json": {
+   "bytes": 322985,
+   "how": "crd2schema.py",
+   "sha256": "820d0a0805ac5dbbcb84a6bde0efdc282908d7df8a9eb11c458920d79edfb38d",
+   "source": "https://raw.githubusercontent.com/argoproj/argo-cd/d6d5b248ce00e1a2c512068002a93d3319767087/manifests/crds/application-crd.yaml",
+   "sourceSha256": "5dde0e229249b6b707beb98674c1deae3949d5c319a6c45b9f5a80c99618e40c"
+  },
+  "crds/argoproj.io/appproject_v1alpha1.json": {
+   "bytes": 16404,
+   "how": "crd2schema.py",
+   "sha256": "d5fe4aba64e642e684c0e14bee5d4a04e54b6f726f26f2a4e0bacb3a8f03e528",
+   "source": "https://raw.githubusercontent.com/argoproj/argo-cd/d6d5b248ce00e1a2c512068002a93d3319767087/manifests/crds/appproject-crd.yaml",
+   "sourceSha256": "ab225266944322750136f1198d93786e4a79a0e43c8d149abfba44da30a3eac8"
+  },
+  "crds/binaryauthorization.cnrm.cloud.google.com/binaryauthorizationattestor_v1beta1.json": {
+   "bytes": 9925,
+   "how": "crd2schema.py",
+   "sha256": "ca50517702891a6708fc50af2ab3f3327ef3072fba9b8240597fefd1b96830af",
+   "source": "https://raw.githubusercontent.com/GoogleCloudPlatform/k8s-config-connector/53e892102c1bf0845d2dfabcb7ba90d5df945f7f/config/crds/resources/apiextensions.k8s.io_v1_customresourcedefinition_binaryauthorizationattestors.binaryauthorization.cnrm.cloud.google.com.yaml",
+   "sourceSha256": "3d496df2f95584a94bc62c6252fe781ed7a66b364584fedf4138a22c88cd8d72"
+  },
+  "crds/binaryauthorization.cnrm.cloud.google.com/binaryauthorizationpolicy_v1beta1.json": {
+   "bytes": 16888,
+   "how": "crd2schema.py",
+   "sha256": "017f473f26e83c818d35f1b1f1e2f49e697f12382c37253a69003a4d5487415a",
+   "source": "https://raw.githubusercontent.com/GoogleCloudPlatform/k8s-config-connector/53e892102c1bf0845d2dfabcb7ba90d5df945f7f/config/crds/resources/apiextensions.k8s.io_v1_customresourcedefinition_binaryauthorizationpolicies.binaryauthorization.cnrm.cloud.google.com.yaml",
+   "sourceSha256": "4c532f910f913ed6465a088cb96886c5c9b9a74529642f23f39b1d71952593b3"
+  },
+  "crds/compute.cnrm.cloud.google.com/computesecuritypolicy_v1beta1.json": {
+   "bytes": 27391,
+   "how": "crd2schema.py",
+   "sha256": "0120ce400c70705df28f6c74e32a2257cb176d184c789becce08f4acb883fa91",
+   "source": "https://raw.githubusercontent.com/GoogleCloudPlatform/k8s-config-connector/53e892102c1bf0845d2dfabcb7ba90d5df945f7f/config/crds/resources/apiextensions.k8s.io_v1_customresourcedefinition_computesecuritypolicies.compute.cnrm.cloud.google.com.yaml",
+   "sourceSha256": "697fefcc534cc41a9d9056a0187f5d294f67d7031437761eebd5ae756204993c"
+  },
+  "crds/containeranalysis.cnrm.cloud.google.com/containeranalysisnote_v1beta1.json": {
+   "bytes": 22984,
+   "how": "crd2schema.py",
+   "sha256": "aa89198e4c0d912f3c79d57569d6864e9457e9c6fe8bf320e7de957a345fc2d0",
+   "source": "https://raw.githubusercontent.com/GoogleCloudPlatform/k8s-config-connector/53e892102c1bf0845d2dfabcb7ba90d5df945f7f/config/crds/resources/apiextensions.k8s.io_v1_customresourcedefinition_containeranalysisnotes.containeranalysis.cnrm.cloud.google.com.yaml",
+   "sourceSha256": "543695d8176e87275c72c3e6b3efec25636ba8db72dba0a9eb0e153ae60235a8"
+  },
+  "crds/gateway.networking.k8s.io/gateway_v1.json": {
+   "bytes": 71751,
+   "how": "crd2schema.py",
+   "sha256": "707cd7fa9c4ea10a62cebb32f000859bb9e235a9fbcedd1421334a2ea02fe8da",
+   "source": "https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/c0836133e24073fcdcdbb1713aba3cc73a89d0b5/config/crd/standard/gateway.networking.k8s.io_gateways.yaml",
+   "sourceSha256": "905c89d8fefaab9088bf9d0a8d47ebd7ec4e653a914d4bfaa575a7716f07a828"
+  },
+  "crds/gateway.networking.k8s.io/gateway_v1beta1.json": {
+   "bytes": 71561,
+   "how": "crd2schema.py",
+   "sha256": "ed478eef18633aefa071ee45cba80e5d7fd309be1ebd36f70d1bd0f7eed59634",
+   "source": "https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/c0836133e24073fcdcdbb1713aba3cc73a89d0b5/config/crd/standard/gateway.networking.k8s.io_gateways.yaml",
+   "sourceSha256": "905c89d8fefaab9088bf9d0a8d47ebd7ec4e653a914d4bfaa575a7716f07a828"
+  },
+  "crds/gateway.networking.k8s.io/httproute_v1.json": {
+   "bytes": 149496,
+   "how": "crd2schema.py",
+   "sha256": "7e7df32206a252a1fbe9ce9d8aea3f3f0e74498ff50d989bbf7dda81810d37b6",
+   "source": "https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/c0836133e24073fcdcdbb1713aba3cc73a89d0b5/config/crd/standard/gateway.networking.k8s.io_httproutes.yaml",
+   "sourceSha256": "a89d17ff5ed060fa0eac015524f9252bb291f616412c13ac8cb952ed9c25c5ad"
+  },
+  "crds/gateway.networking.k8s.io/httproute_v1beta1.json": {
+   "bytes": 149496,
+   "how": "crd2schema.py",
+   "sha256": "7e7df32206a252a1fbe9ce9d8aea3f3f0e74498ff50d989bbf7dda81810d37b6",
+   "source": "https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/c0836133e24073fcdcdbb1713aba3cc73a89d0b5/config/crd/standard/gateway.networking.k8s.io_httproutes.yaml",
+   "sourceSha256": "a89d17ff5ed060fa0eac015524f9252bb291f616412c13ac8cb952ed9c25c5ad"
+  },
+  "crds/iam.cnrm.cloud.google.com/iampolicymember_v1beta1.json": {
+   "bytes": 9280,
+   "how": "crd2schema.py",
+   "sha256": "325245e664803dfca08c91bf188d623b015ebad91824d62b719db049cf195d24",
+   "source": "https://raw.githubusercontent.com/GoogleCloudPlatform/k8s-config-connector/53e892102c1bf0845d2dfabcb7ba90d5df945f7f/config/crds/resources/apiextensions.k8s.io_v1_customresourcedefinition_iampolicymembers.iam.cnrm.cloud.google.com.yaml",
+   "sourceSha256": "3857b636b797d04c66d5b8e3ab638ec0671a6c784a2dc4c96817a58573195d29"
+  },
+  "crds/iam.cnrm.cloud.google.com/iamserviceaccount_v1beta1.json": {
+   "bytes": 4164,
+   "how": "crd2schema.py",
+   "sha256": "a00a9066a07b6750eb82a73fea0e269e81d6891ca9794d883d7be55f0c8eb228",
+   "source": "https://raw.githubusercontent.com/GoogleCloudPlatform/k8s-config-connector/53e892102c1bf0845d2dfabcb7ba90d5df945f7f/config/crds/resources/apiextensions.k8s.io_v1_customresourcedefinition_iamserviceaccounts.iam.cnrm.cloud.google.com.yaml",
+   "sourceSha256": "6f6bc2a8529bd4614ac6e119ee2c5ed5b4040cf54bc37ff5fc00eb6042be7f44"
+  },
+  "crds/kms.cnrm.cloud.google.com/kmscryptokey_v1beta1.json": {
+   "bytes": 6395,
+   "how": "crd2schema.py",
+   "sha256": "babf24384917570ed22d9ac9c979ac8687302b4aec9e061fa82fee0f61b4bef3",
+   "source": "https://raw.githubusercontent.com/GoogleCloudPlatform/k8s-config-connector/53e892102c1bf0845d2dfabcb7ba90d5df945f7f/config/crds/resources/apiextensions.k8s.io_v1_customresourcedefinition_kmscryptokeys.kms.cnrm.cloud.google.com.yaml",
+   "sourceSha256": "5ba6ad095bda46d3de2d3d83a85c136cafac2d818bf5fd0bb6d9f41bd03d0281"
+  },
+  "crds/kms.cnrm.cloud.google.com/kmskeyring_v1beta1.json": {
+   "bytes": 3087,
+   "how": "crd2schema.py",
+   "sha256": "62dff0630e742ac6485ba6c3d908cc3e1a29cac5ee8b9bff19e723274cdcc03b",
+   "source": "https://raw.githubusercontent.com/GoogleCloudPlatform/k8s-config-connector/53e892102c1bf0845d2dfabcb7ba90d5df945f7f/config/crds/resources/apiextensions.k8s.io_v1_customresourcedefinition_kmskeyrings.kms.cnrm.cloud.google.com.yaml",
+   "sourceSha256": "4205896ec1cea564326a945bdeebf19eee5bbe8ed9098218a3de0ff081c384f3"
+  },
+  "crds/networking.gke.io/fqdnnetworkpolicy_v1alpha1.json": {
+   "bytes": 8675,
+   "how": "copied",
+   "sha256": "36ceee4c5851e78857ae072d0a62b5f3ac08b853db0e48579ab3c76063c21ab5",
+   "source": "https://raw.githubusercontent.com/datreeio/CRDs-catalog/63669a570e231d4f1f8396d229a1de512bcf0a34/networking.gke.io/fqdnnetworkpolicy_v1alpha1.json",
+   "sourceSha256": "36ceee4c5851e78857ae072d0a62b5f3ac08b853db0e48579ab3c76063c21ab5"
+  },
+  "crds/networking.gke.io/gcpbackendpolicy_v1.json": {
+   "bytes": 47121,
+   "how": "copied",
+   "sha256": "168bd842dfdb8196a09d9aeb316dda8559afebeae80c9d001c2e61c5b696941a",
+   "source": "https://raw.githubusercontent.com/datreeio/CRDs-catalog/63669a570e231d4f1f8396d229a1de512bcf0a34/networking.gke.io/gcpbackendpolicy_v1.json",
+   "sourceSha256": "168bd842dfdb8196a09d9aeb316dda8559afebeae80c9d001c2e61c5b696941a"
+  },
+  "crds/networking.gke.io/healthcheckpolicy_v1.json": {
+   "bytes": 32864,
+   "how": "copied",
+   "sha256": "a78437ed95d100b202896c8fdd4bac80f5bcd3282d876fcbce39dc0a68cbc6ed",
+   "source": "https://raw.githubusercontent.com/datreeio/CRDs-catalog/63669a570e231d4f1f8396d229a1de512bcf0a34/networking.gke.io/healthcheckpolicy_v1.json",
+   "sourceSha256": "a78437ed95d100b202896c8fdd4bac80f5bcd3282d876fcbce39dc0a68cbc6ed"
+  },
+  "crds/postgresql.cnpg.io/backup_v1.json": {
+   "bytes": 16571,
+   "how": "crd2schema.py",
+   "sha256": "c7b6f0c960e2426438d7cb2995ddb5c70d8b43eced8c88e0bbe2a5a0c2fb97b3",
+   "source": "https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/2a35abb4628f209d149825ef3c38011e0701ff2f/config/crd/bases/postgresql.cnpg.io_backups.yaml",
+   "sourceSha256": "c9c015781d32d12ec4d8dc31ce1c4fbe2574f640993d8587f77c079286f2c388"
+  },
+  "crds/postgresql.cnpg.io/cluster_v1.json": {
+   "bytes": 362352,
+   "how": "crd2schema.py",
+   "sha256": "fcd2faa62c57f6bb1964851408f3df6860477c208db0140a30627e14a41c155e",
+   "source": "https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/2a35abb4628f209d149825ef3c38011e0701ff2f/config/crd/bases/postgresql.cnpg.io_clusters.yaml",
+   "sourceSha256": "d255176c368727b8ee84893bb2f37b5c5578a497e6ee7461a81fa6f3f80e552b"
+  },
+  "crds/postgresql.cnpg.io/scheduledbackup_v1.json": {
+   "bytes": 6876,
+   "how": "crd2schema.py",
+   "sha256": "b347ba26f54c241d4636ebd67c055c48a4e3319f791e1a5686496509a0971a56",
+   "source": "https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/2a35abb4628f209d149825ef3c38011e0701ff2f/config/crd/bases/postgresql.cnpg.io_scheduledbackups.yaml",
+   "sourceSha256": "fcd133df3056601c1a306a4bf0cd2fac6413c99b88b459e0296321299f7e5062"
+  },
+  "crds/secretmanager.cnrm.cloud.google.com/secretmanagersecret_v1beta1.json": {
+   "bytes": 16005,
+   "how": "crd2schema.py",
+   "sha256": "a6992d8e476c8c97cb5353268c69afb1904e88170060d82b20cfc1db74f7a077",
+   "source": "https://raw.githubusercontent.com/GoogleCloudPlatform/k8s-config-connector/53e892102c1bf0845d2dfabcb7ba90d5df945f7f/config/crds/resources/apiextensions.k8s.io_v1_customresourcedefinition_secretmanagersecrets.secretmanager.cnrm.cloud.google.com.yaml",
+   "sourceSha256": "ac14433c61ba69cfa66cf928b8097affa15b00136fba6005355720817ab52140"
+  },
+  "crds/storage.cnrm.cloud.google.com/storagebucket_v1beta1.json": {
+   "bytes": 19190,
+   "how": "crd2schema.py",
+   "sha256": "a4fc4b1b93479946f0e7805f6b5e48bc867e23ca6129400668ad56d1a2c68a70",
+   "source": "https://raw.githubusercontent.com/GoogleCloudPlatform/k8s-config-connector/53e892102c1bf0845d2dfabcb7ba90d5df945f7f/config/crds/resources/apiextensions.k8s.io_v1_customresourcedefinition_storagebuckets.storage.cnrm.cloud.google.com.yaml",
+   "sourceSha256": "70250a86db6e1206aedf9c059caeec2e011900d3632f4984a6924eb96a773462"
+  },
+  "k8s/v1.34.0-standalone-strict/clusterrole-rbac-v1.json": {
+   "bytes": 22676,
+   "how": "copied",
+   "sha256": "0777f91c4fa08bd3989b6db8c59dad0429a63dec8f59e883ff55c947a14d0d5f",
+   "source": "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/5f1fa4f7908afc9b6641c62d282a4a22437626e1/v1.34.0-standalone-strict/clusterrole-rbac-v1.json",
+   "sourceSha256": "0777f91c4fa08bd3989b6db8c59dad0429a63dec8f59e883ff55c947a14d0d5f"
+  },
+  "k8s/v1.34.0-standalone-strict/clusterrolebinding-rbac-v1.json": {
+   "bytes": 18417,
+   "how": "copied",
+   "sha256": "e2d0471b444cf7ea4fd69d7eba1b16e06215503bfbc650450c2b6ad9b40f863c",
+   "source": "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/5f1fa4f7908afc9b6641c62d282a4a22437626e1/v1.34.0-standalone-strict/clusterrolebinding-rbac-v1.json",
+   "sourceSha256": "e2d0471b444cf7ea4fd69d7eba1b16e06215503bfbc650450c2b6ad9b40f863c"
+  },
+  "k8s/v1.34.0-standalone-strict/configmap-v1.json": {
+   "bytes": 17083,
+   "how": "copied",
+   "sha256": "e0eaddebd677c08aa092b2da2264d86ac4fc34eed112b9fac2945b3f00c1e9b1",
+   "source": "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/5f1fa4f7908afc9b6641c62d282a4a22437626e1/v1.34.0-standalone-strict/configmap-v1.json",
+   "sourceSha256": "e0eaddebd677c08aa092b2da2264d86ac4fc34eed112b9fac2945b3f00c1e9b1"
+  },
+  "k8s/v1.34.0-standalone-strict/deployment-apps-v1.json": {
+   "bytes": 688598,
+   "how": "copied",
+   "sha256": "92b7a333a49124f5300095d3e7786ca2038b7d6e602c309f73e90631377e4b0a",
+   "source": "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/5f1fa4f7908afc9b6641c62d282a4a22437626e1/v1.34.0-standalone-strict/deployment-apps-v1.json",
+   "sourceSha256": "92b7a333a49124f5300095d3e7786ca2038b7d6e602c309f73e90631377e4b0a"
+  },
+  "k8s/v1.34.0-standalone-strict/job-batch-v1.json": {
+   "bytes": 706024,
+   "how": "copied",
+   "sha256": "967234ab9eb5477fd8e5538c83c85817a560aecc1aaf886fafbe8a4ac0972023",
+   "source": "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/5f1fa4f7908afc9b6641c62d282a4a22437626e1/v1.34.0-standalone-strict/job-batch-v1.json",
+   "sourceSha256": "967234ab9eb5477fd8e5538c83c85817a560aecc1aaf886fafbe8a4ac0972023"
+  },
+  "k8s/v1.34.0-standalone-strict/namespace-v1.json": {
+   "bytes": 18892,
+   "how": "copied",
+   "sha256": "324fae677b98d1a6d54340db0c334d053e8ffbafceb3f73326e41de2610d5843",
+   "source": "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/5f1fa4f7908afc9b6641c62d282a4a22437626e1/v1.34.0-standalone-strict/namespace-v1.json",
+   "sourceSha256": "324fae677b98d1a6d54340db0c334d053e8ffbafceb3f73326e41de2610d5843"
+  },
+  "k8s/v1.34.0-standalone-strict/networkpolicy-networking-v1.json": {
+   "bytes": 47155,
+   "how": "copied",
+   "sha256": "f6324cc464f62228b0418f438d167208e4f86c7e3677ba30f608e79a8b26ba79",
+   "source": "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/5f1fa4f7908afc9b6641c62d282a4a22437626e1/v1.34.0-standalone-strict/networkpolicy-networking-v1.json",
+   "sourceSha256": "f6324cc464f62228b0418f438d167208e4f86c7e3677ba30f608e79a8b26ba79"
+  },
+  "k8s/v1.34.0-standalone-strict/persistentvolumeclaim-v1.json": {
+   "bytes": 36401,
+   "how": "copied",
+   "sha256": "5ec592cb5f004c0e24fa080dd84f48b9339cd0c82248a78d37b6a3e1b4d7ab34",
+   "source": "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/5f1fa4f7908afc9b6641c62d282a4a22437626e1/v1.34.0-standalone-strict/persistentvolumeclaim-v1.json",
+   "sourceSha256": "5ec592cb5f004c0e24fa080dd84f48b9339cd0c82248a78d37b6a3e1b4d7ab34"
+  },
+  "k8s/v1.34.0-standalone-strict/poddisruptionbudget-policy-v1.json": {
+   "bytes": 27252,
+   "how": "copied",
+   "sha256": "da73f50ad0264d73f668eecaa9959da65afe2846602a7a5c8fd51f7799d6a258",
+   "source": "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/5f1fa4f7908afc9b6641c62d282a4a22437626e1/v1.34.0-standalone-strict/poddisruptionbudget-policy-v1.json",
+   "sourceSha256": "da73f50ad0264d73f668eecaa9959da65afe2846602a7a5c8fd51f7799d6a258"
+  },
+  "k8s/v1.34.0-standalone-strict/role-rbac-v1.json": {
+   "bytes": 18914,
+   "how": "copied",
+   "sha256": "dfe8fb03b1642f985b57b12edd1727b6867c13ed4b6761ef81bdd51b1d236711",
+   "source": "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/5f1fa4f7908afc9b6641c62d282a4a22437626e1/v1.34.0-standalone-strict/role-rbac-v1.json",
+   "sourceSha256": "dfe8fb03b1642f985b57b12edd1727b6867c13ed4b6761ef81bdd51b1d236711"
+  },
+  "k8s/v1.34.0-standalone-strict/rolebinding-rbac-v1.json": {
+   "bytes": 18555,
+   "how": "copied",
+   "sha256": "87ab620d0adddcd2803b92357fce2854af752326df8c5408a7588aae98b3031d",
+   "source": "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/5f1fa4f7908afc9b6641c62d282a4a22437626e1/v1.34.0-standalone-strict/rolebinding-rbac-v1.json",
+   "sourceSha256": "87ab620d0adddcd2803b92357fce2854af752326df8c5408a7588aae98b3031d"
+  },
+  "k8s/v1.34.0-standalone-strict/secret-v1.json": {
+   "bytes": 17311,
+   "how": "copied",
+   "sha256": "de761ccb06bd1d2c641fb57397f61b68e7ff53a384f0817ce40e5ded8cee86f3",
+   "source": "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/5f1fa4f7908afc9b6641c62d282a4a22437626e1/v1.34.0-standalone-strict/secret-v1.json",
+   "sourceSha256": "de761ccb06bd1d2c641fb57397f61b68e7ff53a384f0817ce40e5ded8cee86f3"
+  },
+  "k8s/v1.34.0-standalone-strict/service-v1.json": {
+   "bytes": 43682,
+   "how": "copied",
+   "sha256": "8bf019854daed511e7c174896a898173fa65d88ec5937c687a37303d4cc9351b",
+   "source": "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/5f1fa4f7908afc9b6641c62d282a4a22437626e1/v1.34.0-standalone-strict/service-v1.json",
+   "sourceSha256": "8bf019854daed511e7c174896a898173fa65d88ec5937c687a37303d4cc9351b"
+  },
+  "k8s/v1.34.0-standalone-strict/serviceaccount-v1.json": {
+   "bytes": 21064,
+   "how": "copied",
+   "sha256": "8193d6c3561475c6d3d5c44e1faedb1df53905373d904bc17015694326d659cf",
+   "source": "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/5f1fa4f7908afc9b6641c62d282a4a22437626e1/v1.34.0-standalone-strict/serviceaccount-v1.json",
+   "sourceSha256": "8193d6c3561475c6d3d5c44e1faedb1df53905373d904bc17015694326d659cf"
+  },
+  "k8s/v1.34.0-standalone-strict/statefulset-apps-v1.json": {
+   "bytes": 735894,
+   "how": "copied",
+   "sha256": "e095a9d88776fbb2e9c9312baac322c992a9f5188f81ae690bb7dc00fc3915fa",
+   "source": "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/5f1fa4f7908afc9b6641c62d282a4a22437626e1/v1.34.0-standalone-strict/statefulset-apps-v1.json",
+   "sourceSha256": "e095a9d88776fbb2e9c9312baac322c992a9f5188f81ae690bb7dc00fc3915fa"
+  },
+  "k8s/v1.34.0-standalone-strict/storageclass-storage-v1.json": {
+   "bytes": 19906,
+   "how": "copied",
+   "sha256": "9704bb88ec73ed37f8d565dbd2d2ee1e8ee61b5ec63c96a5a61926d6971ef3c9",
+   "source": "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/5f1fa4f7908afc9b6641c62d282a4a22437626e1/v1.34.0-standalone-strict/storageclass-storage-v1.json",
+   "sourceSha256": "9704bb88ec73ed37f8d565dbd2d2ee1e8ee61b5ec63c96a5a61926d6971ef3c9"
+  }
+ },
+ "kubernetes": "1.34.0",
+ "schema": 1
+}

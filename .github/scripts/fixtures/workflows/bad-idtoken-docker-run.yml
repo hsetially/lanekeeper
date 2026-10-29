@@ -1,0 +1,21 @@
+name: bad-idtoken-docker-run
+on:
+  push:
+    tags: ["v*"]
+permissions: {}
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - run: docker run --rm -v "$PWD:/w" -w /w rust:1.88.0-trixie cargo build --release
+      - run: |
+          docker run --rm \
+            -v "$PWD:/w" \
+            node:22 npm ci
+      - run: docker build -t x .
+      - run: docker buildx build --target out --output type=local,dest=out .
+      - run: docker compose build

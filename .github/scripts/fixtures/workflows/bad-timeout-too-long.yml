@@ -1,0 +1,11 @@
+name: bad-timeout-too-long
+on:
+  push:
+    branches: [main]
+permissions: {}
+jobs:
+  slow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1000
+    steps:
+      - run: true

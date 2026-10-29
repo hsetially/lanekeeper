@@ -1,0 +1,13 @@
+name: bad-top-write-quoted
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: "read"
+  packages: 'write'
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: true

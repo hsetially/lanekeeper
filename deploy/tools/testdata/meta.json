@@ -1,0 +1,16 @@
+{
+  "_comment": "SYNTHETIC. The shape of https://api.github.com/meta with documentation addresses (RFC 5737, RFC 3849) instead of GitHub's, so that the test of github-hook-ranges.mjs has nothing real in it and does not need the network. The real list is never typed in.",
+  "verifiable_password_authentication": false,
+  "hooks": [
+    "203.0.113.128/25",
+    "2001:db8:1::/48",
+    "203.0.113.0/25",
+    "198.51.100.0/24",
+    "2001:db8::/32",
+    "198.51.100.0/24"
+  ],
+  "web": ["192.0.2.0/24", "2001:db8:2::/48"],
+  "api": ["192.0.2.0/24"],
+  "git": ["192.0.2.0/24"],
+  "actions": ["192.0.2.0/24"]
+}

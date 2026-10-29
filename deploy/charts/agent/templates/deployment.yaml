@@ -1,0 +1,164 @@
+{{- /* Hostile values must not become manifests: these stop the render before anything is written. */ -}}
+{{- $image := include "lanekeeper-agent.image" . -}}
+{{- $ca := include "lanekeeper-agent.hubCa" . -}}
+{{- $joinMode := include "lanekeeper-agent.joinMode" . -}}
+{{- $endpoint := required "hub.endpoint is required: the agent dials the hub (LK_HUB_ENDPOINT)" .Values.hub.endpoint -}}
+{{- $nfsServer := required "nfs.server is required (LK_NFS_SERVER)" .Values.nfs.server -}}
+{{- $nfsExport := required "nfs.exportPath is required (LK_NFS_EXPORT)" .Values.nfs.exportPath -}}
+{{- $swimlane := required "swimlane.id is required (LK_SWIMLANE)" .Values.swimlane.id -}}
+{{- $cluster := required "swimlane.cluster is required (LK_CLUSTER)" .Values.swimlane.cluster -}}
+{{- $project := required "swimlane.project is required (LK_PROJECT)" .Values.swimlane.project -}}
+{{- if not .Values.namespaces -}}
+{{- fail "namespaces is empty: the agent watches no namespace, and its restarts and drift hints would never run (LK_NAMESPACES)" -}}
+{{- end -}}
+{{- if not .Values.network.hubAddresses -}}
+{{- fail "network.hubAddresses is empty: the NetworkPolicy would admit no connection to the hub (S17, Q1)" -}}
+{{- end -}}
+{{- if not .Values.network.kubeApiAddresses -}}
+{{- fail "network.kubeApiAddresses is empty: the NetworkPolicy would admit no connection to the Kubernetes API server (S17)" -}}
+{{- end -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lanekeeper-agent
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-agent.labels" . | nindent 4 }}
+spec:
+  # One agent per swimlane (D26). Not a value: hardening.rego fails any other number, because two agents would write the same export
+  # and share one identity.
+  replicas: 1
+  # The spool is a ReadWriteOnce volume that one agent writes. A rolling update (Kubernetes' default) would start the new pod beside the old
+  # one: two agents on one spool and one export, under one identity. Recreate stops the old pod first (D74; topology.rego requires it).
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "lanekeeper-agent.podLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "lanekeeper-agent.podLabels" . | nindent 8 }}
+      annotations:
+        # The agent reads the hub's CA once, at start, so a new CA must restart it.
+        checksum/hub-ca: {{ $ca | sha256sum | quote }}
+    spec:
+      serviceAccountName: lanekeeper-agent
+      # The agent calls the Kubernetes API (crates/agent/HARDENING.md), so its token is mounted; nothing else about it is wide.
+      automountServiceAccountToken: true
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      # Service links put the name of every Service into the environment.
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . | quote }}
+        {{- end }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        # The uid and gid that own the export's files (Q4, Q11).
+        runAsUser: {{ .Values.nfs.uid }}
+        runAsGroup: {{ .Values.nfs.gid }}
+        fsGroup: {{ .Values.nfs.gid }}
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent
+          image: {{ $image | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          ports:
+            - {name: ops, containerPort: 9090, protocol: TCP}
+          livenessProbe:
+            httpGet: {path: /healthz, port: ops}
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: {path: /readyz, port: ops}
+            periodSeconds: 10
+            timeoutSeconds: 3
+          # Names, paths and addresses; no secret (S7): the tokens come from Workload Identity, or from a Secret that the agent reads by
+          # name through the API.
+          env:
+            - name: LK_HUB_ENDPOINT
+              value: {{ $endpoint | quote }}
+            - name: LK_HUB_AUDIENCE
+              value: {{ default $endpoint .Values.hub.audience | quote }}
+            - name: LK_HUB_CA_FILE
+              value: /etc/lanekeeper/hub-ca/ca.pem
+            - name: LK_SWIMLANE
+              value: {{ $swimlane | quote }}
+            - name: LK_CLUSTER
+              value: {{ $cluster | quote }}
+            - name: LK_PROJECT
+              value: {{ $project | quote }}
+            - name: LK_NFS_SERVER
+              value: {{ $nfsServer | quote }}
+            - name: LK_NFS_EXPORT
+              value: {{ $nfsExport | quote }}
+            - name: LK_NFS_ROOT
+              value: /mnt/csp-configuration
+            # The NAME of the certificate Secret, which the agent's Role grants by name. Not a secret.
+            - name: LK_CERT_SECRET
+              value: lanekeeper-agent-cert
+            {{- if .Values.joinToken.enabled }}
+            # The NAME of the join-token Secret (Q26), which the chart never fills. Not a secret.
+            - name: LK_JOIN_TOKEN_SECRET
+              value: lanekeeper-agent-join-token
+            {{- end }}
+            - name: LK_JOIN_MODE
+              value: {{ $joinMode | quote }}
+            - name: LK_NAMESPACES
+              value: {{ join "," .Values.namespaces | quote }}
+            # The spool (D74): a volume of its own, outside the export. maxBytes is the bound the agent puts on it, and the claim is larger.
+            - name: LK_SPOOL_DIR
+              value: /var/lib/lanekeeper/spool
+            - name: LK_SPOOL_MAX_BYTES
+              value: {{ .Values.spool.maxBytes | int64 | quote }}
+            - name: LK_TMP_DIR
+              value: /tmp
+            # The service by its full name: a short name resolves only in the agent's own namespace. The namespace is the rule's.
+            - name: LK_CONFIG_SERVER_URL
+              value: {{ include "lanekeeper-agent.configServerUrl" . | quote }}
+            - name: LK_HEALTH_ADDR
+              value: 0.0.0.0:9090
+            {{- range $name, $value := .Values.config.tuning }}
+            - name: {{ $name }}
+              value: {{ $value | toString | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: nfs
+              mountPath: /mnt/csp-configuration
+            - name: tmp
+              mountPath: /tmp
+            - name: spool
+              mountPath: /var/lib/lanekeeper/spool
+            - name: hub-ca
+              mountPath: /etc/lanekeeper/hub-ca
+              readOnly: true
+      volumes:
+        - name: nfs
+          nfs:
+            server: {{ $nfsServer | quote }}
+            path: {{ $nfsExport | quote }}
+            readOnly: false
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: spool
+          persistentVolumeClaim:
+            claimName: lanekeeper-agent-spool
+        - name: hub-ca
+          configMap:
+            name: lanekeeper-hub-ca

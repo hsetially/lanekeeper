@@ -1,0 +1,7 @@
+apiVersion: v2
+name: lanekeeper-db
+description: The Lanekeeper database, a three-instance CloudNativePG cluster with TLS 1.3 only, backups to Google Cloud Storage and a NetworkPolicy of its own (09/T5). The operator and its CRDs are installed apart (plan 09 A4); the Secrets with the roles' passwords are made out of band (plan 09 A7).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.30.0-0"

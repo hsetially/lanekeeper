@@ -1,0 +1,37 @@
+# Default deny for the pods of the hub image's Jobs (S18): both policy types are set and there is no ingress rule, so nothing reaches them (they
+# listen on nothing), and they reach kube-dns and the database, and nothing else: not the other replicas, not the metadata server, not the
+# external hosts. The label is theirs, not the hub's, so the hub's NetworkPolicy does not select them; the database's policy admits it on
+# 5432 (charts/db). A hook of the same events as the migration Job with a lower weight, so that the first migration is under it too, and kept
+# for the seed Job (jobHook in _helpers.tpl). network.rego checks the rendering.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lanekeeper-hub-jobs
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-hub.jobLabels" (list . "jobs") | nindent 4 }}
+  annotations:
+    {{- include "lanekeeper-hub.jobHook" "-10" | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "lanekeeper-hub.jobSelectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    # Postgres, with full TLS verification (S6).
+    - to:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: {{ .Values.database.clusterName }}
+      ports:
+        - {protocol: TCP, port: 5432}

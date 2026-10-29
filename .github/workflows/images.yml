@@ -1,0 +1,341 @@
+# The container images: built reproducibly, scanned, and published signed (09/T2; S16, S19, S20).
+#
+# EVERY RUN (pull requests, main, tags):
+#   policy     the Dockerfile and model-lock policies, the pinned BuildKit, the publishing script against a local registry, and the
+#              registry stages of the kind test against a real registry (no cluster).
+#   scan-test  the vulnerability scan must fail on a planted critical finding (log4j), so a scan that cannot fail is noticed.
+#   image      per image (hub, agent): build it twice from the same commit with the pinned BuildKit and require one digest
+#              (deploy/images/reproducible-check.sh), write its CycloneDX SBOM (the image and the Rust crates in the binary),
+#              and scan both: any critical finding fails the job. These jobs hold no write permission and no token.
+#   kind-e2e   the hub chart with CloudNativePG on a kind cluster of one control plane and three workers, from the hub image that `image`
+#              scanned (deploy/tests/kind/run.sh): `psql sslmode=disable` is rejected (S6), the database speaks TLS 1.3 only, the migration
+#              Job and the seed Job complete, and each of the three replicas stops at its first Google step (exit 1, the hub's typed start
+#              error for the web certificate or a CA, and no setting, database or schema error in its log). WHAT IT DOES NOT MEASURE, and
+#              says so in its summary: /readyz on 3 replicas and P11 on the pod. The production image cannot be Ready without real Google
+#              and Entra (prompt 18, G23), and kind has neither, so acceptance 3 is not met by this job and is not ticked anywhere because
+#              of it. `publish` does not wait for it, so images are still published; whether a red kind-e2e blocks a merge is a branch
+#              rule for a person.
+# MAIN AND v* TAGS ONLY:
+#   publish    per image: push the archive that was scanned, byte for byte, to GHCR by digest; sign it keyless (cosign, GitHub's
+#              OIDC token, the Sigstore log); attach the SBOM as a signed attestation; attach SLSA build provenance; sign it again
+#              with the Cloud KMS key that Binary Authorization checks, when the repository variables for it are set (plan 09 A5);
+#              then verify every one of those from the registry, in the same job. This is the only job with a write permission.
+#
+# WHAT THE SPLIT PROTECTS. The build runs the code of every dependency (cargo build scripts, npm packages). It runs in jobs with
+# `contents: read` only: no packages: write, no id-token: write. The publish job runs no build step: it handles the files that the
+# image job made, with pinned tools, so no dependency's code ever holds a token that can push or sign.
+#
+# DOCKER HUB. Docker Hub limits anonymous pulls per IP address and GitHub-hosted runners share addresses, so every job that pulls
+# starts with the docker-hub-mirror action, and the BuildKit builder is created with the same mirror (deploy/images/builder.sh).
+# Every image is named by digest, so the mirror cannot change what is pulled. No Docker Hub token is stored (S19, S20).
+#
+# BUILDKIT. The digest of an image holds for one BuildKit version, so builds use the builder that deploy/images/builder.sh creates
+# from the image pinned in deploy/images/tools.env, never the one that ships with the runner's Docker.
+#
+# WHAT HAS RUN ON GITHUB (PR 31, run 40366344156): policy, scan-test and both image jobs are green (two builds and one digest, the SBOM, the
+# scan). kind-e2e ran for the first time: its cluster stage passed (1 control plane and 3 workers) and `hub image` failed, because the registry
+# did not answer on the published port; that stage now waits, tries every route and prints the container's state (deploy/tests/kind/README.md).
+# Not run yet: everything in kind-e2e after the registry, and `publish` (main and tags only), whose keyless signing and attestation need
+# GitHub's OIDC token and can only be proved on GitHub.
+name: images
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "crates/**"
+      - "proto/**"
+      - "api/**"
+      - "db/**"
+      - "docs/**"
+      - "web/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "deploy/images/**"
+      - "deploy/policy/**"
+      - "deploy/charts/hub/**"
+      - "deploy/charts/db/**"
+      - "deploy/values/hub/**"
+      - "deploy/values/db/**"
+      - "deploy/tests/kind/**"
+      - "Justfile"
+      - ".github/workflows/images.yml"
+      - ".github/actions/docker-hub-mirror/**"
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "3"
+
+jobs:
+  policy:
+    name: policies and scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/docker-hub-mirror
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just@1.40.0
+      # No Rust cache here (zizmor, cache-poisoning): this workflow publishes images, so none of its jobs restores a cache that a
+      # pull request could have written. The price is a build of the hardening tests from scratch.
+      - run: just ops-tools-install cosign crane
+      - run: just images-policy-test
+      - run: just images-builder-test
+      - run: just images-publish-test
+      - run: just kind-registry-test
+
+  scan-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/docker-hub-mirror
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just@1.40.0
+      - run: just images-scan-test
+
+  image:
+    name: image ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [hub, agent]
+    env:
+      IMAGE: ${{ matrix.image }}
+      LK_BUILDER: lanekeeper-buildkit
+      # GHCR links a package to the repository by this label, and the workflow's token can push only to a linked package.
+      LK_IMAGE_SOURCE: ${{ github.server_url }}/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      # Same cause as the test job of rust.yml (PR 25, main run 40166747415: "No space left on device"), and this job needs more
+      # room than that one: two `--no-cache` builds of the same image keep their layers and the build cache of the whole Rust
+      # dependency tree in /var/lib/docker, next to two OCI archives and the vulnerability database of the scan (about 3.3 GB).
+      # Remove what the job never uses, and print df so the headroom is visible.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: ./.github/actions/docker-hub-mirror
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just@1.40.0
+      - name: Install cargo-cyclonedx (the SBOM of the crates in the binary)
+        run: |
+          set -euo pipefail
+          . deploy/images/tools.env
+          cargo install --locked cargo-cyclonedx --version "$LK_CARGO_CYCLONEDX_VERSION"
+      - name: Create the BuildKit builder pinned in tools.env
+        run: |
+          set -euo pipefail
+          . deploy/images/tools.env
+          LK_DOCKER_HUB_MIRROR="$LK_CI_DOCKER_HUB_MIRROR" deploy/images/builder.sh "$LK_BUILDER"
+      - name: Build twice from this commit and require one digest
+        run: deploy/images/reproducible-check.sh "$IMAGE"
+      - name: Write the SBOM
+        run: deploy/images/sbom.sh "$IMAGE" --out target/images/repro/a
+      - name: Scan the image and its SBOM (a critical finding fails the job)
+        run: deploy/images/scan.sh "$IMAGE" --out target/images/repro/a
+      - name: Say which image this is
+        run: |
+          set -euo pipefail
+          digest="$(cat "target/images/repro/a/$IMAGE.digest")"
+          {
+            echo "### $IMAGE"
+            echo
+            echo "Built twice with BuildKit $LK_BUILDER: the digest is \`$digest\`, reproduced."
+            echo "The SBOM has $(jq '.components | length' "target/images/repro/a/$IMAGE.cdx.json") components, and the scan found no critical finding."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the scanned image for the publish and kind-e2e jobs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: image-${{ matrix.image }}
+          path: |
+            target/images/repro/a/${{ matrix.image }}.oci.tar
+            target/images/repro/a/${{ matrix.image }}.digest
+            target/images/repro/a/${{ matrix.image }}.cdx.json
+          if-no-files-found: error
+          retention-days: 3
+      - name: Disk left
+        if: always()
+        run: df -h /
+
+  kind-e2e:
+    name: kind, the hub chart with CloudNativePG
+    needs: [image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      # Four kind nodes, three database instances and their images share the root disk with the Docker images (PR 25, main run
+      # 40166747415). Remove what the job never uses, and print df so the headroom is visible.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: ./.github/actions/docker-hub-mirror
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just@1.40.0
+      - run: just ops-tools-install kind helm crane
+      - name: Fetch the hub image that the image job scanned
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: image-hub
+          path: target/images
+      # What this job asserts is what the production image can do in kind; see the header of this file and of deploy/tests/kind/run.sh. It
+      # never skips and never retries.
+      - name: The hub chart with CloudNativePG, in kind
+        run: just kind-e2e
+      # The sentence of lib.sh (the one run.sh prints), appended to the job summary whatever happened above, even when run.sh did not get to
+      # write its own: the job's result is never read without it.
+      - name: Say what this job does not measure
+        if: always()
+        run: |
+          . deploy/tests/kind/lib.sh
+          printf '%s\n' "$KIND_NOT_MEASURED" >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the logs and the diagnostics of the run
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: kind-e2e-logs
+          path: target/kind-e2e
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Disk left
+        if: always()
+        run: df -h /
+
+  publish:
+    name: publish ${{ matrix.image }}
+    needs: [policy, scan-test, image]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write # push to GHCR with the workflow's own token
+      id-token: write # keyless signing: GitHub's OIDC token, exchanged for a short-lived Sigstore certificate
+      attestations: write # the provenance attestation
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [hub, agent]
+    env:
+      IMAGE: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just@1.40.0
+      - run: just ops-tools-install cosign crane
+      - name: Fetch the scanned image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: image-${{ matrix.image }}
+          path: target/images
+      - name: Name the repository
+        id: repo
+        run: |
+          set -euo pipefail
+          echo "repository=ghcr.io/${GITHUB_REPOSITORY,,}/$IMAGE" >> "$GITHUB_OUTPUT"
+      - name: Push by digest, sign, attach the SBOM
+        id: push
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ steps.repo.outputs.repository }}
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/target/ops-tools/bin:$PATH"
+          printf '%s' "$GITHUB_TOKEN" | crane auth login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          ref="$(deploy/images/publish.sh push "$IMAGE" "$REPOSITORY" "sha-$GITHUB_SHA")"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "digest=${ref#*@}" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then crane tag "$ref" "$GITHUB_REF_NAME"; fi
+          deploy/images/publish.sh sign "$ref"
+          deploy/images/publish.sh attest-sbom "$ref" "target/images/$IMAGE.cdx.json"
+      - name: Attach SLSA build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.repo.outputs.repository }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+      # The second signature, with a Cloud KMS key, is the one Binary Authorization checks (plan 09 A5). The key, the Workload
+      # Identity pool and the service account come with the gcp chart (T6); until the repository variables below are set, this is
+      # skipped, and the summary and a warning say so.
+      - name: Authenticate to Google Cloud with Workload Identity Federation
+        if: ${{ vars.LK_COSIGN_KMS_KEY != '' && vars.LK_GCP_WIF_PROVIDER != '' && vars.LK_GCP_SERVICE_ACCOUNT != '' }}
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.LK_GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.LK_GCP_SERVICE_ACCOUNT }}
+      - name: Sign with the Cloud KMS key
+        if: ${{ vars.LK_COSIGN_KMS_KEY != '' && vars.LK_GCP_WIF_PROVIDER != '' && vars.LK_GCP_SERVICE_ACCOUNT != '' }}
+        env:
+          REF: ${{ steps.push.outputs.ref }}
+          KMS_KEY: ${{ vars.LK_COSIGN_KMS_KEY }}
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/target/ops-tools/bin:$PATH"
+          deploy/images/publish.sh sign "$REF" --key "$KMS_KEY"
+          echo "The Cloud KMS signature was made with \`$KMS_KEY\`." >> "$GITHUB_STEP_SUMMARY"
+      - name: Say that there is no KMS signature
+        if: ${{ vars.LK_COSIGN_KMS_KEY == '' || vars.LK_GCP_WIF_PROVIDER == '' || vars.LK_GCP_SERVICE_ACCOUNT == '' }}
+        run: |
+          echo "::warning::No Cloud KMS signature: LK_COSIGN_KMS_KEY, LK_GCP_WIF_PROVIDER and LK_GCP_SERVICE_ACCOUNT are not all set, so Binary Authorization has nothing to check yet."
+          echo "No Cloud KMS signature was made (the repository variables for it are not all set), so Binary Authorization has no attestation to check." >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify the signature, the SBOM and the provenance from the registry
+        env:
+          REF: ${{ steps.push.outputs.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/target/ops-tools/bin:$PATH"
+          # The signer must be this repository's images workflow, run on main or on a v* tag, and nothing else.
+          repo_re="$(printf '%s' "$GITHUB_REPOSITORY" | sed -e 's/[][\.*^$+?(){}|]/\\&/g')"
+          identity="^https://github\\.com/${repo_re}/\\.github/workflows/images\\.yml@refs/(heads/main|tags/v.+)\$"
+          deploy/images/publish.sh verify "$REF" --identity-regexp "$identity" --issuer https://token.actions.githubusercontent.com
+          gh attestation verify "oci://$REF" --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/images.yml"
+      - name: Print the reference to put in the chart values
+        env:
+          REF: ${{ steps.push.outputs.ref }}
+        run: |
+          {
+            echo "### $IMAGE"
+            echo
+            echo "Published, signed and verified: \`$REF\`"
+            echo
+            echo "Put this reference, with its digest, in the Helm values (plan 09 A29); a tag is never deployed."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,20 @@
+lanekeeper-agent: swimlane {{ .Values.swimlane.id }}, watching {{ join ", " .Values.namespaces }}, in {{ .Release.Namespace }}.
+The config-server is called at {{ include "lanekeeper-agent.configServerUrl" . }}, and the egress policy lets the agent reach its pods in {{ include "lanekeeper-agent.configServerNamespace" . }} and nowhere else.
+{{- if .Values.joinToken.enabled }}
+
+NOTE: joinToken.enabled is true. The agent may read the Secret lanekeeper-agent-join-token (key `token`) in {{ .Release.Namespace }},
+and the chart never fills it: an Admin issues a one-time token for this swimlane in the hub, and it is put there out of band
+(deploy/ADDING-A-SWIMLANE.md). Workload Identity is the normal way (S5, Q26).
+{{- end }}
+{{- if not .Values.serviceAccount.gcpServiceAccount }}
+
+WARNING: serviceAccount.gcpServiceAccount is empty. There is no Workload Identity, so the agent can join only with a join token (S5).
+{{- end }}
+
+The spool ({{ .Values.spool.size }}, ReadWriteOnce) is PersistentVolumeClaim/lanekeeper-agent-spool, and the Deployment recreates its pod: the
+agent stops for the moment between the old pod and the new one (D74).
+{{- if not .Values.spool.cmekKey }}
+
+WARNING: spool.cmekKey is empty. The spool's disk uses {{ .Values.spool.fallbackClassName }}, which is Google-managed encryption and not a
+customer-managed key (S10, Q29).
+{{- end }}

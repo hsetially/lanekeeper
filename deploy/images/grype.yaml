@@ -1,0 +1,11 @@
+# grype configuration for deploy/images/scan.sh (09/T1, S20).
+#
+# Exceptions: an entry is allowed only for a critical finding that does not apply to us, with the reason and a review date
+# in a comment beside it, and a human approves it in review. Unfixed criticals are not excepted for being unfixed. Example:
+#
+#   ignore:
+#     # <why it does not apply>; review by <YYYY-MM-DD>
+#     - vulnerability: CVE-0000-00000
+#       package:
+#         name: <package>
+ignore: []

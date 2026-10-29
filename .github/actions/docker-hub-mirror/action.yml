@@ -1,0 +1,47 @@
+# Docker Hub pulls through a mirror (09/T2; S19, S20). Docker Hub allows 100 anonymous pulls an hour per IP address, and the
+# GitHub-hosted runners share addresses, so a job that pulls (a base image, the BuildKit image, a tool image, the database image
+# of a test) can get "429 Too Many Requests". A mirror serves the same content without that limit, and a stored Docker Hub token,
+# the other fix, is a long-lived secret that S19 and S20 rule out. Every image in this repository is named by digest, so the
+# mirror is not trusted: other content under a digest is refused, and a mirror that fails falls back to Docker Hub.
+#
+# Use it right after the checkout of a job that starts containers or builds images. The daemon reloads its registry settings on
+# SIGHUP without stopping the containers that run, so a job's `services:` survive; the action checks that the mirror is listed
+# afterwards. If the reload did not take, it restarts the daemon, which stops running containers; set `restart: "false"` in a job
+# with services, to fail instead. A service container is pulled before any step runs, so its image is named on the mirror
+# (mirror.gcr.io/pgvector/pgvector@sha256:...). BuildKit does not read the daemon's setting: deploy/images/builder.sh passes
+# LK_DOCKER_HUB_MIRROR to the builder it creates.
+name: docker-hub-mirror
+description: Send the Docker daemon's Docker Hub pulls through a registry mirror.
+inputs:
+  mirror:
+    description: The registry host that serves Docker Hub's content.
+    required: false
+    default: mirror.gcr.io
+  restart:
+    description: Restart the Docker daemon when a reload does not make it use the mirror. "false" fails instead.
+    required: false
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - name: Write the daemon settings and reload them
+      shell: bash
+      env:
+        MIRROR: ${{ inputs.mirror }}
+        RESTART: ${{ inputs.restart }}
+      run: |
+        set -euo pipefail
+        merged="$(mktemp)"
+        node "$GITHUB_ACTION_PATH/../../scripts/docker-hub-mirror.mjs" "$MIRROR" /etc/docker/daemon.json > "$merged"
+        sudo install -m 0644 -o root -g root "$merged" /etc/docker/daemon.json
+        rm -f "$merged"
+        listed() { docker info --format '{{range .RegistryConfig.Mirrors}}{{println .}}{{end}}' | grep -Fxq -e "https://$MIRROR/" -e "https://$MIRROR"; }
+        sudo kill -HUP "$(cat /var/run/docker.pid)"
+        for _ in 1 2 3 4 5 6 7 8 9 10; do listed && break; sleep 1; done
+        if ! listed; then
+          [ "$RESTART" = "true" ] || { echo "the Docker daemon did not pick up the mirror after a reload, and restart is off"; exit 1; }
+          echo "::notice::the reload did not take; restarting the Docker daemon"
+          sudo systemctl restart docker
+        fi
+        listed || { echo "the Docker daemon does not list https://$MIRROR as a mirror"; docker info | grep -A3 -i mirror || true; exit 1; }
+        echo "Docker Hub pulls go through https://$MIRROR" >> "$GITHUB_STEP_SUMMARY"

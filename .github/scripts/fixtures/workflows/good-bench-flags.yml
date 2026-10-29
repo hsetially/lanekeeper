@@ -1,0 +1,20 @@
+name: good-bench-flags
+on:
+  push:
+    branches: [main]
+permissions: {}
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - run: cargo bench --workspace --bench '*' --locked -- --baseline-lenient main
+      - run: cargo bench --workspace --bench '*' --no-fail-fast --locked -- --save-baseline main
+      - run: cargo bench -p engine --bench parse_flatten -- --save-baseline x
+      - run: cargo bench -p engine --bench=parse_flatten -- --save-baseline x
+      - run: cargo bench --workspace --benches --locked
+      - run: cargo bench --workspace
+      - run: cargo build --benches --locked -- -v
+      - run: echo "cargo bench -- --save-baseline is what fails"
