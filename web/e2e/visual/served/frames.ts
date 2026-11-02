@@ -21,7 +21,7 @@ import { settle } from "../search/kit";
 const FILE_PATH = "tx-infinity-api%2Fconnection-pool.yml";
 const SERVED = "/swimlanes/sitb/served";
 /** A complete address: the file, the application and the tenant are in it, so the page asks once when it opens. */
-const ASKED = `${SERVED}?application=tx-infinity-core&tenant=sit7&file=${FILE_PATH}`;
+export const ASKED = `${SERVED}?application=tx-infinity-core&tenant=sit7&file=${FILE_PATH}`;
 const SERVED_API = api("/swimlanes/sitb/served");
 
 const PAGE_WHY = "As served has no frame in the handoff (design/DEVIATIONS.md: \"As served (/swimlanes/:id/served)\", handoff gap H2)";
@@ -88,14 +88,59 @@ const askAgainFails: Step = async ({ page }) => {
   await expect(page.getByText("Couldn't refresh")).toBeVisible();
 };
 
-/** More than a minute goes by on screen: the answer is kept and says it may be out of date. The clock is the page's own (installed before it opens). */
-const aMinuteLater: Step = async ({ page }) => {
-  await page.clock.fastForward(61_000);
+/**
+ * More than a minute goes by on screen: the answer is kept and says it may be out of date. The clock is the page's own (installed before it opens).
+ *
+ * The live stream stays healthy while it does, as it does for a real hub, which sends a heartbeat every 15 s. The client takes 45 s without
+ * a byte for a dead stream (src/live/sse-client.ts, STALL_MS) and opens it again, and one jump of 61 s with no byte in it is such a stream:
+ * the pill went to "Reconnecting... retry in 1s" (180 px wide), then, 0.2 to 1 s later (the jitter), to "Live" (56 px), and the header's switcher
+ * and search box moved by the difference (124 px) while the frame was photographed. A mask hides a pill, not the re-layout of its neighbours.
+ * Measured on 24 runs at the moment the runner photographs (about 460 ms after the jump): 13 times the wide pill, 9 times the narrow one, twice
+ * "Reconnecting..." with no countdown (122 px, the new request in flight); the stream had been opened a second time by then in 11 of the 24,
+ * and in every one of 12 runs of the `check` below, on the old step, by the time the pill said "Live". The two baselines that CI made show it:
+ * the light one has the wide pill, the dark one the narrow one. Against the narrow one the wide frame is 0.52 % different (6,694 pixels of
+ * 1,296,000), over the limit of 0.5 %.
+ *
+ * So the minute is four jumps of a little over 15 s with a heartbeat after each: the stream is never dead and never reopened, and the pill
+ * says "Live" from first to last (the frame's `check` reads both).
+ */
+export const aMinuteLater: Step = async ({ page, harness }) => {
+  for (let beat = 1; beat <= 4; beat += 1) {
+    await page.clock.fastForward(15_250);
+    harness.emit(": heartbeat\n\n");
+    // The next jump waits until the page has READ this heartbeat. Without the wait the jumps (a round trip each, about 5 ms) can overtake the
+    // page's reading of the heartbeats (a task of its own): the client then sees 45 s without a byte, and the stream is opened again. One run
+    // of the first 150 of this frame (3 workers on 4 cores) failed its check that way, with two stream requests. `minute.spec.ts` makes the
+    // page read 300 ms late: without this wait that fails every time (10 of 10), with it never.
+    await expect.poll(() => heartbeatsRead(page), { message: `the page has read heartbeat ${beat}` }).toBeGreaterThanOrEqual(beat);
+  }
   await expect(page.getByText("This view may be out of date")).toBeVisible();
 };
 
+/**
+ * The page counts the heartbeats it has read from the stream (`window.__lkBeats`, on every `reader.read()` that returns one), so that a step can wait
+ * for the page to have taken one in before it moves the clock on. Installed before the page opens; it reads, it does not change what the app sees.
+ */
+export const countHeartbeats: Step = async ({ page }) => {
+  await page.addInitScript(() => {
+    const w = window as unknown as { __lkBeats: number };
+    w.__lkBeats = 0;
+    const proto = ReadableStreamDefaultReader.prototype;
+    const read = Reflect.get(proto, "read") as (this: ReadableStreamDefaultReader) => Promise<ReadableStreamReadResult<unknown>>;
+    Reflect.set(proto, "read", function counted(this: ReadableStreamDefaultReader) {
+      return Reflect.apply(read, this, []).then((result: ReadableStreamReadResult<unknown>) => {
+        if (result.value instanceof Uint8Array && new TextDecoder().decode(result.value).includes("heartbeat")) w.__lkBeats += 1;
+        return result;
+      });
+    });
+  });
+};
+
+/** How many heartbeats the page has read since it opened (`countHeartbeats` must have been installed). */
+export const heartbeatsRead = (page: Page): Promise<number> => page.evaluate(() => (window as unknown as { __lkBeats?: number }).__lkBeats ?? 0);
+
 /** The page's clock is a fake one that starts at the design's instant and runs on, so that it can be moved on. */
-const clockThatMoves: Step = async ({ page }) => {
+export const clockThatMoves: Step = async ({ page }) => {
   await page.clock.install({ time: FROZEN_NOW });
 };
 
@@ -319,11 +364,15 @@ const states: Frame[] = [
     path: ASKED,
     title: "the answer is more than a minute old: it is kept, and it says it may be out of date and since when",
     why: PAGE_WHY,
-    before: clockThatMoves,
+    before: then(clockThatMoves, countHeartbeats),
     steps: then(answered, aMinuteLater),
-    check: async ({ page }) => {
+    check: async ({ page, harness }) => {
       await expect(page.getByText("Asked 2025-10-09 08:53:20 UTC (1 min ago)")).toBeVisible();
       await expect(page.getByRole("table", { name: "Served text of connection-pool.yml" })).toContainText("pool:");
+      // The stream was alive for the whole minute: one connection, never reopened, and the pill says so. (A stream that was reopened
+      // is photographed in whatever state of the reconnection it is in, which is not what this frame is about.)
+      await expect(page.locator("[data-slot='live-indicator']")).toHaveAttribute("data-status", "live");
+      expect(harness.requests().filter((r) => r.kind === "stream"), "the stream was opened once and kept").toHaveLength(1);
     },
   }),
   ...pair("S23", {
