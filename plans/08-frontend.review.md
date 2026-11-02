@@ -230,3 +230,107 @@ VERDICT: CHANGES REQUESTED
 - `just verify-08` and `just verify` as recipes (`just` is not installed), `cargo deny`, `cargo audit`, `osv-scanner` (`api.osv.dev` answers 403 through the sandbox proxy; `pnpm audit` and the registry sweep stand in), Docker.
 - Anything on GitHub: the five shards, the `perf` job on a shared runner, the baseline label job, branch protection. The CI results for main are relayed by the evidence and not seen by me.
 - Chromium 153 (CI's browser; mine is 141); the other prompts' Rust benchmarks; a human look at the 684 baseline images.
+
+# Round 3
+
+Reviewer: independent `reviewer` agent, fresh context, read-only. Reviewed branch `agent/08-frontend` at `fed5a5c` (follow-up commits `44d92da`, `7d69356`, `e082335`, `674b865`, `9440900`, `d13a957`, `01869a4`, `fed5a5c` after `e5ed17e`) against `prompts/REVIEW.md` and the `lanekeeper-pr-review` skill, on 2026-11-02 (15:05Z to 15:50Z). Nothing was edited, staged or committed; build output went to ignored folders and the scratchpad.
+
+VERDICT: CHANGES REQUESTED
+
+Every agent-side finding of round 2 is closed in code. One blocking item is left, and it needs a human, not another agent change: a committed baseline picture is wrong, so the tip's `web-e2e` is red on exactly one test.
+
+## Blocking
+
+1. `web/e2e/visual/__baselines__/visual/served/served.spec.ts/served-S22-light.png` (committed by the bot in `94bf740`), against the frame in `web/e2e/visual/served/frames.ts:107-118`: the tip is deterministically red on one visual test, so the gate of acceptance 1 (`just verify-08` runs `just web-e2e` with `retries: 0`) is not green.
+   - The light baseline of frame S22 was photographed while the live pill was mid-reconnection (the pill mask is 180 px wide, x 1244-1423). The fixed frame keeps the stream alive and photographs the pill as "Live" (56 px, x 1368-1423, the same as the dark baseline). So S22 (light) differs by 6,694 pixels, which is 0.5165 percent of the frame against a limit of 0.5, and S22 (dark) passes. The two committed baselines of one frame disagree about the app's state.
+   - This is not an agent code defect. The implementer's fix for R2-B1 (b) is right, it refused to regenerate the picture locally or loosen the limit, and it left acceptance 1 unticked (evidence line 59). But R2-B1 asked for the gate to be reliably green on the committed tree. It is now reliably red on this one test, and only the label-triggered runner job can change it.
+   - Proof: `pnpm exec playwright test --project=chromium --workers=3 --repeat-each=6 -g S22 e2e/visual/served/served.spec.ts` gave `6 failed, 6 passed`: all 6 light runs `6694 pixels (ratio 0.01 of all image pixels) are different`, all 6 dark runs pass. The whole folder `e2e/visual/served` gave `1 failed, 45 passed` (the failure is S22 light). Magenta mask width in the header band (python3 -I, PIL): baseline light 180 px, baseline dark 56 px, my fresh light capture (`test-results/.../served-S22-light-actual.png`) 56 px. The margin is only 3 percent over the limit, so another renderer could pass it by accident while the baseline still records the wrong state.
+   - Red-green for the fix itself, in a scratch copy: with the heartbeat wait removed from `aMinuteLater`, `e2e/visual/served/minute.spec.ts` fails 5 of 5; as committed it passes 15 of 15.
+   - Fix, a human step (`.github/workflows/web-e2e.yml` line 59: "To refresh one, delete its PNG in a commit and add the label again"): delete `served-S22-light.png` in a commit on the branch, add the label `bootstrap-baselines`, look at the new PNG (pill masked and 56 px wide, switcher at about x 838-1103, banner "This view may be out of date"), then run `web-e2e`. Or the human records in writing that this red is accepted until then. This finding closes when that picture is replaced and the folder is green.
+
+## Non-blocking
+
+1. `pnpm audit` is red: 7 findings (5 moderate, 2 low, 0 high, 0 critical), run here at 15:10Z; `e5ed17e` had 29 (10 high), round 1 had 17 (1 critical). Left: `fast-uri` 3.1.8 (4), `vite` 6.4.4 (1, dev server), `minimatch` (1, two paths). Each fix is under 14 days old by the registry clock now: `fast-uri` 3.1.9 is 13.67 days (eligible 2026-11-02T23:05:26Z, about 8 hours away), `vite` 6.4.5 is 12.40 (2026-11-04T05:35:48Z), `minimatch` 11.0.1 is 5.70 (2026-11-10T22:26:03Z). Nothing eligible is left unbumped. The human decision in `osv-scanner.toml:10-13` (2026-10-26) names dompurify, undici, fast-uri, @vitest/mocker and zod; it does not name `vite` or `minimatch` (its fix was published on 10-27). The `osv` job of `web.yml` stays red until those dates. Merge precondition for a human: wait and re-resolve the lockfile after each date, or record an exception in `docs/decisions.md`.
+2. D129 to D133 (`docs/decisions.md:382-412`) are still "PROPOSED, not yet decided". The evidence's "Open human decisions that stand" (lines 161-167) has no mention of them (0 matches in the file), and line 152 says W20 was "decided by the human on 2026-10-17", which `docs/decisions.md` does not show. Unchanged since round 2 non-blocking 2. Fix: list the five with their status, here and in the PR text.
+3. The adoption wizard is still a `StubPage` (`web/src/features/adoption/AdoptPage.tsx:7-8`); `api/openapi.yaml` has no adoption operation (CG6). The evidence leaves it unticked (line 65). It needs the human's explicit acceptance of the deferral (on record in the blockers file) or `contract/08-adoption`.
+4. `design/DEVIATIONS.md`: 179 of 179 rows are `pending`, so acceptance 4 stays unticked (evidence line 64). The follow-up edit `7d69356` is wording only (1 insertion, 1 deletion, last cell still `pending`), and its claims hold: `src/features/shell/crumbs.ts:40,75` cuts above nine parts with an ellipsis, `current-swimlane.ts:5` keeps the last swimlane, `e2e/visual/file/masks.ts` masks x 237, y 9, 619 by 25.
+5. `plans/08-frontend.evidence.md:63` ticks "Visual regression and keyboard-map tests pass" and quotes "all 744 e2e/visual tests passed", which is true of the earlier tree only; at the tip the visual folder is 744 of 745 (blocking 1). Line 59 says so; line 63 should carry the same caveat. The header (line 3) still names HEAD `7d69356`, with an exception sentence for the round-2 part.
+6. `docs/threat-model.md:846` and evidence line 77 say direct dependencies are "pinned exactly" / "exact pins in web/package.json". 11 of 43 are ranges (`react`, `react-dom`, `@types/react`, `@types/react-dom`, `@eslint/js`, `eslint`, `eslint-plugin-react`, `@vitejs/plugin-react`, `typescript-eslint`, `vite` with `^`; `typescript` with `~`), unchanged since `e5ed17e`. The real pin is the lockfile under `--frozen-lockfile` plus `minimumReleaseAge` (770 of 770 locked versions at least 15.14 days old), so this is wording. The same line still says "no known vulnerabilities at the T1 commit" beside 7 findings (round 2 non-blocking 8).
+7. `@tailwindcss/node` 4.3.3 (`web/package.json:37`) is used only by `src/styles/tailwind.theme.test.ts:7` and nothing justifies it (rule 15). The PR text must carry it.
+8. The frozen plan's traceability table names about 30 proof files that no longer exist (for example `lint/rules.test.ts` is `lint/rules.test.mjs`; `features/adoption/Wizard.test.tsx` has no substitute). The evidence maps only the S# lines and `plans/08-frontend.pr.md` does not exist yet; a full name-to-name table belongs in the PR text.
+9. `web/e2e/visual/served/minute.spec.ts:41-45` watches the pill for 2 s with 20 steps of `waitForTimeout(100)`. It is a negative-assertion window (a stall shows late) and it tests the behaviour (5 of 5 red without the fix), so only noted against the no-sleeps rule.
+10. `git diff e5ed17e..HEAD --check`: trailing whitespace at `plans/08-frontend.blockers.md:1384`. Cosmetic.
+11. Thin margins, measured here alone: Lighthouse lowest page 93 against 90 (file diff 92, 93, 93), route change p95 59.2 ms of 100, diff of 6,000 lines p95 84.8 ms of 500, grid capacity 288.2 fps against a floor of 60, initial JavaScript 195.982 KB of 250. The CI `perf` job runs on a noisier runner and has no number yet; Lighthouse is the budget most likely to show it.
+
+## Round-1 findings
+
+| ID | Closed | How |
+|---|---|---|
+| B1 audit, S19 | No (reduced) | `pnpm audit`: 17 in round 1 (1 critical, 5 high), 29 (10 high) at `e5ed17e`, 7 now (0 high). Bump `44d92da` took every fix that is 14 days old; the three left are 13.67, 12.40 and 5.70 days old. S19 sweep at 15:07Z: 770 of 770 locked versions at least 15.14 days old, integrities equal the registry. Non-blocking 1. |
+| B2 P10 not in CI | Yes | `.github/workflows/web-e2e.yml:174-209`: `perf` job runs `just web-perf` and `just web-bench-check`, no `continue-on-error`. Five budgets re-run here: 5 pass. No CI number seen. |
+| B3 XSS corpus | Yes | `e2e/csp/xss.spec.ts` (574 lines) and `xss-corpus.ts` (379); the whole `e2e/csp` folder ran here: 328 passed, 49 of them the XSS tests. |
+| B4 adoption wizard | No | Still a stub; CG6 not in the contract; unticked in the evidence. Non-blocking 3. |
+| B5 relaxations | No | D129 to D133 are PROPOSED, not decided; the evidence does not list them. Non-blocking 2. |
+| B6 gates not run | No (sandbox) | `just`, `cargo deny`, `cargo audit`, `osv-scanner`, Docker are not available here. Every cheap step of `verify-08` was run as a command and passed, except `web-e2e`, which has the one red test of blocking 1. |
+| NB1 copy-paste | Yes | `isDocPath` has one definition (`features/docs/doc-path.ts:14`); whole vitest passes. |
+| NB2 dead exports | Yes | `SignOutButton`, `swimlanePickupQuery`, `notificationCounts`, `hitSegments`, `VersionChip`, `RoleBadge` no longer exist; `differingCells` is only in `compare/model.test.ts`; the second `pickupVariant` is gone. |
+| NB3 lint loopholes | Yes | `lint/rules.test.mjs` has `window.eval`, `globalThis.eval`, `setHTMLUnsafe` (and the bracket form), `createElementNS` script/iframe and `globalThis['Function']` cases; `pnpm lint` exit 0; the node project passes. |
+| NB4 secret mutations | Yes | `src/lib/query/secret-usage.test.ts` exists and passes. |
+| NB5 CI sequencing | Yes | 684 baselines committed by the bot (`94bf740`, an ancestor of `e5ed17e`), untouched by the follow-up. Caveat: S22 light is wrong (blocking 1). |
+| NB6 intermittent failures | Yes | `scripts/perf/remove-dir.mjs` with its test; Lighthouse ran to the end (exit 0); a11y `-g "file edit"` 16 of 16. |
+| NB7 acceptance 4 | No | 179 of 179 pending. Non-blocking 4. |
+| NB8 traceability names | No (partial) | Substitutes exist for the rows sampled; no full map yet. Non-blocking 8. |
+| NB9 dependencies | No (partial) | `@tailwindcss/node` unjustified. Non-blocking 7. |
+| NB10 non-task commits | Yes | T0 to T6 in order (`cc3448c` to `9c9243a`); all eight follow-up commits end with the two required lines; no commit after `514c48a` touches `plans/08-frontend.md`; the plans files only gain lines (blockers 135/0, evidence 178/0, review 93/0). |
+
+## Round-2 finding R2-B1 (the three flakes)
+
+| Site | Closed | How |
+|---|---|---|
+| (a) `attribution.spec.ts:238` | Yes | `e2e/fixtures/test.ts`: the `harness` fixture depends on `page` and calls `unrouteAll({ behavior: "ignoreErrors" })` on page and context before it closes the harness; an auto fixture does the same for tests without it. With the old fixture in a scratch copy `e2e/harness/teardown.spec.ts` fails 20 of 20 (`route.fetch: aborted`); with the new one 20 of 20 pass. The attribution test: 120 of 120 pass with the command that gave 3 failed of 120 in round 2. |
+| (b) S22 frame | Code yes; gate no | `frames.ts`: four jumps of 15.25 s with a heartbeat each and a wait until the page has read it; `minute.spec.ts` red 5 of 5 without the wait, 15 of 15 green with it. The picture is now "Live" in both themes, but the committed light baseline is the old wrong state: blocking 1. |
+| (c) `editor/csp.spec.ts:80` | Yes | `settledFidelity` helper, DOM check on the typed text. With the wait removed in a scratch copy the new test fails 5 of 5 with `worst 19` (main's CI number); as committed the editor spec passes 110 of 110 (11 tests x 10). |
+
+## Specific checks asked for
+
+- S19: 17 versions added and 18 removed in the lockfile since `e5ed17e` (the same set as the evidence). Registry publish times at 15:07Z: the youngest is `seroval` 1.6.11 at 15.14 days (14.82 days at the bump commit's author time, 07:32Z). All 770 locked versions are at least 15.14 days old; all integrities equal the registry; no tarball or git source; `minimumReleaseAge: 20160` unchanged; the one new override (`@scalar/json-magic>undici: 7.30.1`) is scoped and explained.
+- S12 and the CSP unchanged, no new egress or eval: no path under `crates/`, `web/src`, `web/lint`, `web/scripts`, `web/index.html` or `vite.config.ts` changed. I built the `e5ed17e` tree with its own lockfile and the tip: `diff -rq` of the two `dist` folders is identical (162 files). `dist-check` scanned 158 files, nothing the CSP would refuse; the 328 csp tests (49 XSS, the requests and clipboard specs among them) and the editor CSP spec pass. The follow-up's test code has no `.only`, `.skip`, `fixme`, `eval`, `new Function` or off-site URL.
+- The 684 app-owned baselines (593 was round 1's count of skipped tests): untouched by the follow-up, 0 paths. The DEVIATIONS edit is wording only and the row stays `pending`. The evidence does not tick the adoption wizard (line 65), the design owner's approval (line 64) or `just verify-08` (line 59).
+- The follow-up touched no contract path and not `docs/decisions.md` (0 files); the five P10 entries of `perf/budgets.toml` are unchanged. Extra-paths are untouched by the follow-up; `Contract-change` stays `needed` as recorded (the human approved without `--contract-change`).
+- Spec chain: `514c48a 08/plan: approved by a human` exists; no later commit touches the plan; task commits follow `08/T0` to `08/T6`.
+- Security trace, unchanged since round 1 and exercised again in the whole vitest run and the csp folder: S2 `auth/session.tsx`; S3 `api/client.ts` (`api/client.test.ts`); S12 `lib/csp/trusted-types.ts`, `editor/policy.ts`, `features/docs/reader-html.ts`, `scripts/dist-check.mjs` (`e2e/csp/*.spec.ts`, `xss.spec.ts`); S14b `components/masking/plan.ts`; S21 `lint/lanekeeper-rules.mjs` (`lint/rules.test.mjs`); S19 above. Threat model updated: yes ("Web app (08)"; not touched by the follow-up).
+
+## Gates re-run
+
+| Command | Result |
+|---|---|
+| `pnpm install --frozen-lockfile` | exit 0, up to date, 1.2 s |
+| `pnpm lint` | exit 0, 95 s |
+| `pnpm typecheck` | exit 0 |
+| `pnpm exec vitest run` | 391 files, 9,683 tests passed, exit 0, 392 s (equals the evidence) |
+| `pnpm gen:api`, then `git status --porcelain` | exit 0, 0 changed paths |
+| `pnpm build` | exit 0, 68 s; initial JavaScript 196.0 KB gzip of 250; dist-check 158 files clean |
+| `pnpm build:perf` | exit 0, 23 s; 196.6 KB; dist-check 172 files |
+| `dist` of the `e5ed17e` tree (own lockfile) against the tip | identical, 162 files |
+| `pnpm audit` | exit 1, 7 (5 moderate, 2 low) |
+| S19 registry sweep, 770 versions | 0 under 14 days (youngest 15.14), 0 integrity mismatches, 0 tarball or git sources |
+| `scripts/check-actions-pinned.sh` | All actions pinned by SHA |
+| `cargo fmt --all -- --check` | exit 0 |
+| Playwright attribution test x120, 3 workers | 120 passed |
+| Playwright `harness/teardown.spec.ts` x20, old fixture / new fixture | 20 failed / 20 passed |
+| scratch mutations: `settledFidelity` without waiting; heartbeat wait removed | 5 of 5 fail / 5 of 5 fail |
+| Playwright `minute.spec.ts` x15; `editor/csp.spec.ts` x10 | 15 passed; 110 passed |
+| Playwright S22 x6; whole `e2e/visual/served` | light 0 of 6, dark 6 of 6; folder 45 passed, 1 failed (S22 light) |
+| Playwright `e2e/csp` + `keyboard/keymap.spec.ts` | 344 passed, 3.9 min |
+| Playwright a11y `-g "file edit"` | 16 passed |
+| Playwright `--list` | 3,495 listed (3 are perf-project timing specs); every per-folder count equals the evidence |
+| Playwright `--project=perf --workers=1`; `scripts/perf/lighthouse.mjs` | 3 passed, 2.6 min; Lighthouse exit 0, lowest page 93 (Compare 95, file diff 93, Swimlanes 95) |
+| `cargo xtask bench-check` on the five P10 ids (the `web-bench-check` body) | PASS 195.982 kb (250); PASS 59.2 ms p95 (100); PASS 84.8 ms p95 (500); PASS 288.2 fps min (60); PASS 93 p50 (90); 5 pass, 0 fail, 0 unmet |
+| `cargo xtask bench-check` (whole registry) | exit 1: 5 pass, 68 fail ("registered but no result"), 2 unmet of 75; the rest are other prompts' Rust benchmarks |
+
+## NOT re-run
+
+- The full 3,492-test `chromium` project (about 71 minutes). I ran the csp folder, the keymap spec, the editor spec x10, the a11y file-edit cases, the teardown and minute specs, the whole served visual folder, the attribution test x120, the perf project and Lighthouse. I did not run the rest of a11y (1,076 of 1,092), layout (1,025), the rest of journeys, the other keyboard specs (88), live (20) and the other visual folders (699 of 745, including tier-1, which needs `LK_REACT18_DIR`).
+- `just verify-08` and `just verify` as recipes (`just` is not installed), `cargo deny`, `cargo audit`, `osv-scanner`, Docker; `cargo clippy` and the xtask `budgets_registry` test (no Rust or budget path changed after `e5ed17e`).
+- Anything on GitHub: the five shards, the `perf` job on a shared runner, the baseline label job, branch protection. The CI results for main are relayed by the evidence and not seen by me.
+- Chromium 153 (CI's browser; mine is 141); the other prompts' Rust benchmarks; a human look at the 684 baseline images.
