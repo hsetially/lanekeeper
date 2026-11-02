@@ -1,0 +1,164 @@
+# Evidence 08: Frontend (web app)
+
+Written in the FINAL step, at the follow-up of 2026-11-02. Real output only. Every number below is from a command run in this session on the committed tree of this worktree: branch `agent/08-frontend`, HEAD `7d69356` (it includes the dependency-bump commit `44d92da` and the DEVIATIONS commit; the commit that carries this file is on top of it and changes only this file and `plans/08-frontend.blockers.md`). The runs were made between 09:01Z and 11:20Z on 2026-11-02.
+
+**Machine and tools.** 4 cores, 15 GB RAM, Linux 6.18; Node v22.22.0, pnpm 10.34.6; Chromium 141.0.7390.37 from `PLAYWRIGHT_BROWSERS_PATH` (CI's own Playwright download is Chromium 153, so every browser number is a 141 number); Playwright 1.63.0; `LK_REACT18_DIR` pointing at the React 18.3.1 UMD files extracted from the two tarballs after their sha512 matched the pins in `.github/workflows/web-e2e.yml`. No `CI` variable was set. `just` is not installed, so the steps of `verify-08` were run as commands, in the Justfile's order (`web-install`, `web-gen-check`, lint, typecheck, vitest, build, `web-e2e`, `web-perf`, `web-bench-check`). The raw outputs are in the session scratchpad (`gates-nov02/`); this file quotes them.
+
+**One correction to the brief this step was given.** It said the 593 tests of the app-owned baselines are NOT RUN here because the baselines come from the label-triggered CI job. That job has run: the bot's commit `94bf740` ("web: app-owned visual baselines", 2026-10-24) put 684 PNGs in the tree (`git ls-files web/e2e/visual/__baselines__` lists 684), so in this run those tests compared against them. Result: 3,489 of 3,489 passed, 0 skipped, and none of the tests carries the "baseline NOT RUN" annotation (see the Playwright row). They were made by Chromium 153 on the runner and compared here by Chromium 141 and passed. What I cannot say is that a person reviewed the PNGs as images (the blockers file records what was checked before they were kept).
+
+## Gates
+
+| Command | Result | Output (tail) |
+|---|---|---|
+| `just verify-08` | NOT RUN as a recipe (`just` is not installed). Every step of it was run as a command: all passed. See "Gates on the official build" | |
+| `just verify` | NOT RUN (`just`; and it includes `cargo deny`, `cargo audit` and the whole Rust workspace, which this prompt does not touch). The web part of it is the first part of `verify-08`, run below; the Rust checks that concern this prompt were run (last rows) | |
+| `cargo xtask bench-check` | The five P10 ids, through the body of the `web-bench-check` recipe: **5 pass, 0 fail, 0 unmet of 5 budgets**. The rest of the registry belongs to other prompts' benchmarks and was not run | `PASS P10.initial_js_gzip_kb 195.982 max <= 250 kb` / `PASS P10.route_change_ms 58 p95 <= 100 ms` / `PASS P10.diff_6000_lines_ms 81.800 p95 <= 500 ms` / `PASS P10.grid_5000_rows_fps 319.500 min >= 60 fps` / `PASS P10.lighthouse_perf 93 p50 >= 90 score` / `bench-check (default): 5 pass, 0 fail, 0 unmet of 5 budgets` |
+
+### Gates on the official build
+
+| Gate | Result | Budget |
+|---|---|---|
+| `pnpm install --frozen-lockfile` | `Lockfile is up to date, resolution step is skipped / Already up to date`, exit 0, 1.4 s. `git status` clean afterwards | |
+| `pnpm lint` (`eslint .`) | clean, exit 0, 1 min 29 s | |
+| `pnpm typecheck` (`tsc -b`) | clean, exit 0, 42 s | |
+| whole `pnpm exec vitest run` (vitest 4.1.12, every project) | **391 files, 9,683 tests passed**, 0 failed, 371 s | all |
+| `pnpm exec vitest run --project node` (`scripts/`, `lint/` and the other node tests) | 164 files, 6,210 tests passed, 29 s | all |
+| `pnpm gen:api` (orval 8.39.0) | `git status --porcelain -- src/api` is empty; the whole tree is clean | no diff |
+| `pnpm build` (bundle gate, `dist-check`) | exit 0, 1 min 5 s. Initial JavaScript **196.0 KB** gzipped (622 KB raw), one file (`assets/index-Dxfk2tYC.js`, the same name, so the same content hash, in the second build of the `web-perf` run below); `dist-check`: 158 files scanned, nothing the CSP would refuse. It prints one note: the lazy Monaco chunk contains `setAttribute('style')`, "blocked by the CSP unless routed to CSSOM" (the editor's global patches route it; this is not in the initial bundle) | 250 KB |
+| `pnpm build:perf` (the test-only build with the extra routes) | exit 0, 24 s. Initial JavaScript 196.6 KB; `dist-check`: 172 files scanned | |
+| `pnpm audit` | **7 findings (0 critical, 0 high, 5 moderate, 2 low), exit 1**, run at 09:12Z. The tree at `e5ed17e` had 29 (10 high, 17 moderate, 2 low; the number is from the bump commit, I did not run `pnpm audit` on that tree). All 7 are on three packages whose fixed version is not yet 14 days old by the clock: see "What `pnpm audit` still reports" | none known |
+| S19 sweep of the lockfile | 770 package versions in the `packages:` section of `pnpm-lock.yaml`, each looked up in the registry: **0 younger than 14 days**; the youngest is `seroval@1.6.11`, 2026-10-18T11:47:50Z, 14.98 days old at 11:19Z | 14 days |
+| Playwright `chromium`, official `dist`, `--workers=2`, `LK_REACT18_DIR`, 09:15:25Z to 10:23:41Z | **3,489 tests: 3,489 passed, 0 failed, 0 flaky, 0 skipped**, 68 min 14 s (4,094 s); the JSON reporter counts `expected: 3489` and `errors: []`. By area: a11y 1,092; csp 328 (`xss.spec.ts` 49, 6.7 min of test time); editor 10; harness 6; journeys 148; keyboard 104; layout 1,025; live 20; perf (the non-timing specs) 12; visual 744 (the last full run, on 2026-10-24, skipped 593 tests for want of baselines; this one skipped none). No test has the "baseline NOT RUN" or "tier 2 NOT RUN" annotation. This is the same project and command as `just web-e2e` after its two builds, with `--reporter=list,json` added to count | all |
+| tier-1 whole frames (96 annotated; limit 0.5 % of the frame, threshold 0.2) | **no frame is over its limit; the highest is 0.399 %** (Swimlanes 1i, light). File View (12 frames) 0.065 to 0.352 (1c highest; **1m 0.069 %**, 81.5 % of the page masked, because of the breadcrumb mask added after CI's 0.558 % on 2026-10-24: the old figure of this table, 0.495 %, is gone). Swimlane Detail (14) 0.032 to 0.097 (1m highest). Swimlanes (10) 0.055 to 0.399. Compare grid (11) 0.019 to 0.057, Compare tree (9) 0.082 to 0.348 (2h). Access pages (6) 0 to 0.028, token pages (14) 0 to 0.056. Search (18) 0.114 to 0.347. Chrome (2): 0.030 and 0.019. In the runner's text rendering (next row) the highest is 0.478 % | 0.5 % |
+| the same tier-1 comparisons with the runner's text rendering (`FONTCONFIG_FILE` with `rgba=rgb`, `lcdfilter=lcddefault`, `antialias=true`, the recipe of the blockers file), `-g "tier 1"`, `--workers=2` | 103 passed, 0 failed, 2.1 min. Highest: **File View 1c 0.478 %**, Swimlanes 1i 0.443 %, File View 1i 0.401 %, File View 1d 0.399 %, Compare 2h 0.391 % (File View 1m 0.111 %) | 0.5 % |
+| route change, cached, p95, `playwright test --project=perf --workers=1`, alone, five runs | **58.0** (the run `bench-check` judged), 55.8, 58.0, 46.5, 51.8 ms (click 46.3 to 62.8, key 43.1 to 50.9, cold 29.4 to 46.2; Swimlanes p95 57.0 to 64.5, the other three screens 19.2 to 36.3; 1 to 4 long tasks) | 100 ms |
+| diff of 6,000 lines, p95, cold, alone, five runs | **81.8** (judged), 94.3, 92.3, 88.4, 84.3 ms (p50 65.2 to 77.9; warm p95 48.9 to 58.6; 0 to 2 long tasks) | 500 ms |
+| grid capacity (minimum of five runs), alone, one run | **319.5 fps** (319.5 to 358.7; 5.3 times the floor); the grid dropped 1 frame, the control list 1, allowed 9; 0 long tasks | 60 fps |
+| Lighthouse, desktop, median of three per page, alone (`node scripts/perf/lighthouse.mjs`, about 9.5 minutes, ending 10:39Z) | Compare **95** (95, 95, 95), file diff **93** (93, 93, 94; LCP 1.39 to 1.43 s; the first two runs needed one retry each after `NO_NAVSTART`, nothing measured, run again), Swimlanes **96** (96, 96, 96). Lowest page 93, min 93, max 96, mean 94.8 | 90 |
+| `cargo xtask bench-check`, the five P10 ids | 5 pass, 0 fail, 0 unmet (195.982 kb, 58 ms, 81.8 ms, 319.5 fps, 93) | |
+| `cargo fmt --all -- --check` | clean, exit 0 | |
+| `cargo clippy --locked -p hub --example web_fixture -- -D warnings` | clean, exit 0 | |
+| `cargo test -p xtask --test budgets_registry` | 8 passed, 0 failed | |
+| `scripts/check-actions-pinned.sh` | `All actions pinned by SHA.` | |
+| `cargo build --locked -p hub --example web_fixture` (the `web-fixture` step) | exit 0, up to date | |
+
+NOT RUN, with the reason: `just verify` and `just verify-08` as recipes (`just` is not installed; the steps were run as commands); `cargo deny`, `cargo audit` and `osv-scanner` (not installed; `pnpm audit` was run instead, and the S19 sweep above); Docker (not installed); the other prompts' benchmarks of the registry; anything on GitHub (the `perf` job's wall time and budgets on a shared runner, the shards, the label job, branch protection); Chromium 153 (CI's browser).
+
+### What `pnpm audit` still reports (run 09:12Z; publish times read from the registry at 09:12Z)
+
+| Package (locked copy) | Advisories | Fixed in | Published | Age at 09:12Z | Eligible (14 days) |
+|---|---|---|---|---|---|
+| `fast-uri` 3.1.8 (under `ajv`) | 4: GHSA-w74x-v6f9-j3xg (moderate), GHSA-wjr9-j795-jxcr (moderate), GHSA-xhq7-xmqj-769h (low), GHSA-333x-w4r6-6crp (low) | 3.1.9 | 2026-10-19T23:05:26Z | 13.42 d | **2026-11-02T23:05:26Z** (about 14 hours after the run) |
+| `vite` 6.4.4 (direct) | 1: GHSA-8g5g-mxqh-grgj (moderate, `server.fs.deny` bypassed with queries; dev server) | 6.4.5 | 2026-10-21T05:35:48Z | 12.15 d | **2026-11-04T05:35:48Z** |
+| `minimatch` 3.1.5 (under `eslint`) and 10.2.6 (under `@typescript-eslint/typescript-estree`) | 1: GHSA-g3hv-75wg-m249 (moderate) | 11.0.1 | 2026-10-27T22:26:03Z | 5.45 d | **2026-11-10T22:26:03Z** (11.0.2 to 11.0.4 are newer: 11.0.4 was published at 04:50Z today) |
+
+Nothing that is eligible by the clock is left unbumped among the three lines above: the fixed versions are all younger than 14 days. `fast-uri` 4.2.2 is 22.96 days old, but `ajv` asks for `^3.0.1`, so using it would be an override across a major; I did not try it, and the advisory's own range (`>=3.0.0 <3.1.9`) does not name the 4.x line. The plan stands: no exception; on or after the times above, a lockfile move (`fast-uri`, `vite`) and an override across majors with a lint run (`minimatch`), then `pnpm audit` again.
+
+## Acceptance checklist
+
+- [ ] `just verify-08` passes. **Not ticked as written**: the recipe was not run (no `just`). Every step passed as a command (install, gen check, lint, typecheck, vitest, build, the whole Playwright project 3,489 of 3,489, `web-perf`, `web-bench-check`), so what is missing is the recipe's own execution and its run on GitHub. Main's last `web-e2e` run is red on two failures that I classify as test races (below).
+- [x] Every P10 gate passes (proof: `cargo xtask bench-check` on the five ids, 5 pass / 0 fail / 0 unmet: initial JS 195.982 KB of 250, route change p95 58 ms of 100, diff of 6,000 lines p95 81.8 ms of 500, grid 319.5 fps against a floor of 60, Lighthouse 93 against 90; measured alone, on this machine; the margins are in "Thin margins").
+- [x] The CSP violation test passes (proof: the 328 tests of `e2e/csp/*.spec.ts` and the 10 of `e2e/editor/csp.spec.ts` passed in the full run, each failing on any `securitypolicyviolation` event or Trusted Types report; `dist-check` in `pnpm build`: 158 files and 172 files, nothing the CSP would refuse. Caveat: on main's last `web-e2e` run one test of `e2e/editor/csp.spec.ts` failed once, for a reason that is not a violation: a test race, see "CI on main" below and in the blockers file).
+- [x] No API type is written by hand (proof: `src/api/api-types.guard.test.ts` passed, run alone and in the whole run; `pnpm gen:api` leaves no diff under `src/api`; the lint rule that allows the global `fetch` only in the one API client, `lint/lanekeeper-rules.mjs` with `lint/rules.test.mjs`, in the whole run).
+- [x] Visual regression and keyboard-map tests pass against the design handoff (proof: in the full run all 744 `e2e/visual` tests passed, the 96 tier-1 whole-frame comparisons against the design's own pages are all under 0.5 % (highest 0.399 %, 0.478 % with the runner's text rendering), and the app-owned comparisons ran against the 684 committed baselines; the 104 `e2e/keyboard` tests, including `keymap.spec.ts` (16), passed).
+- [ ] Every deviation is listed in `design/DEVIATIONS.md` and **approved by the design owner**. **Not ticked.** The deviations are listed (a test fails on a row with an empty cell, a threshold override or a `test.fixme` without a row: `scripts/deviations.test.mjs`, in the whole run), but **all 179 rows are `pending`** (`grep` of the file: 179 rows, 179 `pending`, 0 approved). An agent writes only `pending`; the design owner's approval has not been given.
+- [ ] **The adoption wizard (T4 S6b, CG6) is a documented deferral and stays UNTICKED.** It needs the later contract change `contract/08-adoption` (CG6, adoption operations), which is not in the merged contract; it is recorded in the blockers file ("Decisions and handoff", item 2) and listed as an open item in each closing section.
+
+## Security requirements implemented
+
+S2 (sessions, client side): `src/auth/` (a 401 clears the cache and goes to `/signin?next=` with a same-origin path; pre-session routes never open a stream), `src/lib/query/` (no persistence); tests `src/auth/session.test.tsx`, `src/auth/logout.test.tsx`, `src/lib/query/no-persist.test.ts`, and the lint rule that bans web storage outside `lib/prefs` (`lint/rules.test.mjs`); all in the whole vitest run.
+
+S3 (CSRF): `src/lib/csrf/`, the client mutator `src/api/`; tests `src/lib/csrf/csrf.test.ts`, `src/api/client.test.ts` (`X-CSRF-Token` and `Idempotency-Key` on writes), `src/api/constants.drift.test.ts` (reads the header and cookie names from the Rust source; run alone: passed), the lint rule against `<form method="post">`.
+
+S12 (output safety): `src/lib/csp/trusted-types.ts` (the two policy names), `src/editor/policy.ts` (the tag-aware style-attribute rewrite for Monaco) and `src/editor/global-patches.ts`, `src/features/docs/reader-html.ts` (the last look at the sink: `meta`, `base`, `link`, `img` removed before it), `scripts/dist-check.mjs`; tests `src/lib/csp/csp.test.ts`, `src/lib/csp/sink-access.test.ts`, `src/editor/environment.test.ts`, `src/features/docs/reader-html.test.ts`, and in a real Chromium under the production CSP `e2e/csp/*.spec.ts` (328 tests, among them the 49 tests of the XSS corpus in `xss.spec.ts`), `e2e/editor/csp.spec.ts` (10), `e2e/perf/csp-perf.spec.ts`.
+
+S21 (web lint equivalents): `lint/lanekeeper-rules.mjs` (no `dangerouslySetInnerHTML` outside the sanitised docs sink, no literal query keys, no client-state libraries, no web storage outside `lib/prefs`), strict TypeScript flags (`scripts/tsconfig.test.mjs`); tests `lint/rules.test.mjs`, `lint/restricted-imports.test.mjs`, in the whole run.
+
+S19 (supply chain, as it applies to `web/`): `web/pnpm-workspace.yaml` (`minimumReleaseAge: 20160`, lifecycle scripts blocked), exact pins in `web/package.json`, `scripts/check-actions-pinned.sh` (all actions pinned by SHA); the sweep above (770 of 770 locked versions at least 14.98 days old).
+
+The mutation proofs (a named test that fails when the protection is removed) were made at the stages that wrote each requirement and are recorded in `plans/08-frontend.blockers.md`; I did not repeat them in this step.
+
+## Benchmarks against budgets
+
+| P# | Benchmark | Result | Budget |
+|---|---|---|---|
+| P10 | `P10.initial_js_gzip_kb` (`pnpm build`, `scripts/perf/check-bundle.mjs`) | 195.982 KB gzipped max (621.957 KB raw), one file | 250 KB |
+| P10 | `P10.route_change_ms` (`e2e/perf/route-change.spec.ts`), p95 | 58.0 ms (five runs 46.5 to 58.0) | 100 ms |
+| P10 | `P10.diff_6000_lines_ms` (`e2e/perf/diff-6000.spec.ts`), p95, cold | 81.8 ms (five runs 81.8 to 94.3) | 500 ms |
+| P10 | `P10.grid_5000_rows_fps` (`e2e/perf/grid-5000.spec.ts`), minimum of five, capacity | 319.5 fps (319.5 to 358.7) | 60 fps |
+| P10 | `P10.lighthouse_perf` (`scripts/perf/lighthouse.mjs`, median of three per page), lowest page | 93 (Compare 95, file diff 93, Swimlanes 96) | 90 |
+| P13 (informational) | `e2e/live/live.spec.ts`, emit to the screen | 188 ms | 1 s |
+
+## New dependencies
+
+The 17 package versions that are new in `web/pnpm-lock.yaml` since `e5ed17e` (computed from the lockfile diff: 17 added, 18 removed). Commit `44d92da` changes `web/package.json` (`vitest` 4.1.11 to 4.1.12, exact), `web/pnpm-workspace.yaml` (one scoped override) and the lockfile. Ages are from the registry's publish time against the clock: at the author time of the bump commit (07:32Z) and at 11:15Z. Every `dist.integrity` in the registry equals the one in the lockfile; none is deprecated (checked at 11:15Z). The "Why" of all of them is the same: they are the fixes for the `pnpm audit` findings of `e5ed17e`.
+
+| Package | Version (from) | Published (UTC) | Age in days (07:32Z / 11:15Z) | Why | `cargo deny` / `osv-scanner` |
+|---|---|---|---|---|---|
+| `vitest` (direct) | 4.1.12 (4.1.11) | 2026-10-15T14:51:24Z | 17.69 / 17.85 | two advisories (test-time mock registration) | NOT RUN (not installed); `pnpm audit` clean for it |
+| `@vitest/expect`, `runner`, `snapshot`, `spy`, `utils`, `pretty-format`, `mocker` | 4.1.12 each (4.1.11) | 2026-10-15T14:40:03Z to 14:42:05Z | 17.70 / 17.86 | follow `vitest` (exact dependencies); `mocker` carries the advisory | as above |
+| `undici` (under `jsdom`; and under `orval > @scalar/json-magic` by the override `@scalar/json-magic>undici: 7.30.1`) | 7.30.1 (7.30.0, 7.29.1) | 2026-10-15T14:18:31Z | 17.72 / 17.87 | eight advisories on 7.29.1 and 7.30.0 | as above |
+| `zod` (4.x: `eslint-plugin-react-hooks`, `@scalar/types`, `orval`, `zod-validation-error`, `chromium-bidi`) | 4.6.7 (4.6.5) | 2026-10-12T16:29:37Z | 20.63 / 20.78 | one tree copy of 4.x; the 3.25.76 copy (GHSA-mrhx-c7xc-m3w5, high) left the tree with `chromium-bidi` 17.0.2 | as above |
+| `seroval` (under `@tanstack/router-core`) | 1.6.11 (1.6.8) | 2026-10-18T11:47:50Z | **14.82 / 14.98** (the youngest in the lockfile) | advisory fix, lockfile re-resolution inside `^1.6.7` | as above |
+| `puppeteer-core` (under `lighthouse`, which asks `^25.9.0`) | 25.14.0 (25.12.0) | 2026-10-14T15:30:31Z | 18.67 / 18.82 | moves `chromium-bidi` to the line that depends on `zod ^4` | as above |
+| `chromium-bidi` | 157.0.8090-0 (17.0.2) | 2026-10-07T04:35:10Z | 26.12 / 26.28 | follows `puppeteer-core` | as above |
+| `@puppeteer/browsers` | 3.2.5 (3.2.3) | 2026-10-14T15:30:24Z | 18.67 / 18.82 | follows `puppeteer-core` | as above |
+| `modern-tar` | 0.8.6 (0.8.5) | 2026-10-14T23:02:31Z | 18.35 / 18.51 | follows `@puppeteer/browsers` | as above |
+| `devtools-protocol` (the copy under `puppeteer-core`; `lighthouse` keeps its own exact 0.0.1687809) | 0.0.1696802 (0.0.1687809) | 2026-09-12T04:36:25Z | 51.12 / 51.28 | follows `puppeteer-core` | as above |
+| `webdriver-bidi-protocol` | 1.0.1 (0.4.3) | 2026-09-14T14:09:50Z | 48.72 / 48.88 | follows `puppeteer-core` (a new major, chosen by `puppeteer-core`, not by us) | as above |
+
+`pnpm audit` after the bump: 7 findings (all on the three packages in the table above), down from 29. The bump is test tooling, a build-time reader, a lint dependency, a router parser and the Lighthouse tool chain, none of which is in the browser bundle: the `dist` folders built from the old and the new lockfile were compared with `diff -rq` at the bump commit (162 files each, identical), and `pnpm build` here gives the same initial chunk name. `fast-uri`, `vite` and `minimatch` are not bumped (their fixes are younger than 14 days, above). Earlier dependencies (the plan's table, exact pins at least 14 days old on 2026-10-16) are unchanged.
+
+## Thin margins (measured numbers)
+
+- **Lighthouse, floor 90: the lowest page is 93, a margin of 3 points** (file diff: 93, 93, 94 now; 92 in the closing run of 2026-10-24, 93 in the runs after it and at the bump commit). Two of the three runs of that page needed one retry after `NO_NAVSTART` (a run in which Chromium reported no navigation start, so nothing was measured; the gate runs it again, at most twice). A shared GitHub runner is noisier than this machine; this is the first budget I expect to show it.
+- **Tier-1 frames in the runner's text rendering: File View 1c at 0.478 % of a 0.5 % limit** (0.022 points; the margin is 4.4 % of the limit). Swimlanes 1i is at 0.443 %. With this sandbox's grey text the highest is 0.399 %. A frame near the limit on the runner is not a regression of the app (the same text anti-aliasing is in all of them), but the next change that moves pixels in File View 1c can push it over; the failing comparison prints where (`e2e/visual/diff-report.mjs`).
+- Route change p95 58.0 ms of 100 (five runs 46.5 to 58.0); the slow screen is Swimlanes with forty rows (p95 57.0 to 64.5 ms). The run on 2026-10-24 gave 51.7 to 67.7.
+- Diff of 6,000 lines p95 81.8 ms of 500 in the run that was judged (five runs 81.8 to 94.3; 102.6 on 2026-10-24). Grid capacity 319.5 fps against a floor of 60 (5.3 times).
+- Initial JavaScript 195.982 KB of 250 (54 KB or 22 % of headroom). The first visit including the idle prefetch is 285.6 KB (the `splitting.spec.ts` annotation); it is reported and not budgeted (an open question of T4: should the idle total have a number?).
+- Age of the youngest locked package: `seroval@1.6.11`, 14.98 days at 11:19Z, so 0.98 day over the S19 floor; `fast-uri` 3.1.9 becomes eligible at 23:05Z today.
+- The Playwright project is 68 min of two workers; CI cuts it into five shards with a 40-minute limit (the longest measured at 19 minutes of tests on 2026-10-24).
+
+## CI on main (relayed by the orchestrator; I cannot read GitHub) and what I found
+
+Main at `e5ed17e` (run 40833890587, 2026-10-29): `ci` green; `web-e2e` red on shard 3/5 with two failures out of 698: `e2e/editor/csp.spec.ts:67` and `e2e/journeys/attribution.spec.ts:238`. The earlier main runs 40191097864 (`2d7d1cc`) and 40646367420 (`8019e02`) had `web-e2e` fully green. Nothing under `web/` differs between `8019e02` and `e5ed17e` (`git diff --quiet` exits 0). Both were characterized here without changing them (30 and 20 repeats asked for; more were run): the full table, the timelines and the proposed fixes are in `plans/08-frontend.blockers.md`, section "CI on main after the 09 merge". In short:
+
+| Test | Local runs on the official dist, `--workers=3` | Failure here | Classification |
+|---|---|---|---|
+| `csp.spec.ts:67` "typing, selection, scrolling, find and the palette" | 20 of 20 passed; then 100 of 100; then 60 of 60 with six busy loops on the cores (180 of 180) | none. The mechanism was reproduced in a scratch spec: sampled in the task of the edit the fidelity check reads `{matched: 27, maxDev: 19, within2px: 0}` (CI's numbers; the line height is 19 px), two frames later `{matched: 29, maxDev: 0, within2px: 29}` | **test race**: the spec samples the editor before the next animation frame has drawn the typed Enter; the only one of its six samples with no sleep or wait loop before it |
+| `attribution.spec.ts:238` "the Drift tab says when its filter reaches only the rows that are loaded" | 29 of 30 passed (1 failed: `apiResponse.json: Response has been disposed`, `attribution.spec.ts:243`); scratch copies of the same body: 5 failures of 262, the CI message `route.fetch: read ECONNRESET` among them | the page asks for the drift list a second time after the stream opens; in 2 of 12 logged runs that request came after the test's last assertion, and the handler (no `try`/`catch`) was inside `route.fetch()` when the harness closed its connections | **test race** that ends in the harness teardown (ECONNRESET is the effect of `harness.close()`, not a fault of the mock server); not a product race |
+
+Not fixed in this commit. Proposed: for csp, the existing bounded wait loop of the after-scroll check as a helper also used at `:80`; for attribution, `page.unrouteAll({ behavior: "ignoreErrors" })` at the end of every test in the fixture (150 of 150 passed on a scratch copy against 148 of 150 for the control; `behavior: "wait"` hangs, do not use it). Issues 27 and 28 (`a11y/t5.spec.ts:105`, `keyboard/t6-served.spec.ts:69`) are two other known flakes; neither failed in the full run here.
+
+## Assumptions
+
+- The plan (`plans/08-frontend.md`, revision 1, approved by the human on 2026-10-16 without `--contract-change`) is frozen; the decisions made after it are recorded in `plans/08-frontend.blockers.md` ("Decisions and handoff", and the sections of each stage) and the defaults taken are in the code and in `design/DEVIATIONS.md`. The ones that bind the evidence:
+  - **W3, Monaco:** option (e) in its tag-aware shape (one Trusted Types policy, `lanekeeper-monaco`; a rewrite of `style="..."` into a data attribute applied through CSSOM; three narrow patches of built-ins); the CSP is not weakened. The G0 measurement was made in Chromium 141 only.
+  - **W5, masking:** M1: the web app treats the server's `masks` as the guarantee and never masks by itself. The hub does not yet mask `ServedFile.text` (D128, prompt 05's follow-up): the first residual risk of the web app. Copy of a revealed value stays off.
+  - **W20, the grid gate:** the grid's capacity (frames a second with the frame-rate limit off, minimum of five runs, floor 60) is the budgeted number, with a control-list assertion in the spec; decided by the human on 2026-10-17.
+  - **W2, fan-out:** serial for T1 to T3, T5 and T6; orchestrator-driven slices for T4. **A server-state layer** was folded into T3 by the human (2026-10-17), with one named lint exception for the optimistic-update helper.
+  - **The attribution stage change** (`will-change: transform` on the stage of the File 1j pieces) replaces the brief's mask for the meter piece; accepted by the human on 2026-10-24.
+  - **Baselines** are made on the runner by the label-triggered job and are in the tree (`94bf740`); a later change that moves pictures needs the label removed and added again. The dependency bump moved no pixel (the `dist` folders are identical), so the baselines were not remade.
+- The versions of the 17 bumped packages were taken because the registry's publish time puts them at least 14 days back by the clock; `minimumReleaseAge` (20160 minutes) in `web/pnpm-workspace.yaml` is enforced by pnpm itself. The human granted no exception for web packages.
+- The timing numbers are for this machine (4 cores, Chromium 141, quiet). The budgets are judged on CI's `perf` job too, whose runner is noisier; I have no CI number.
+- The figures that CI relayed to me (the run numbers, the two failures, the green earlier runs) are taken as given.
+- Plan names in the traceability table that no longer match a file (for example `lint/rules.test.ts` is now `lint/rules.test.mjs`, `trusted-types.test.ts` is `src/lib/csp/csp.test.ts` and `sink-access.test.ts`) are mapped to the files that exist in the S# list above.
+
+Open human decisions that stand (none blocks; the defaults are in the code and in DEVIATIONS), from the closing sections of the blockers file:
+1. `design/DEVIATIONS.md`: the design owner approves or rejects 179 `pending` rows (the row for the header breadcrumb now says what File View 1m shows).
+2. The adoption wizard (CG6) and the contract items CG8 and CG9 as recorded; retention minimums (design 30 days and 5 versions against the contract); the attribution evidence popover has no Close button; the five design calls (dark skeleton colour, Services status cell at 1024, the last crumb at 1024, the Pickup column width, the pickup chip position); the idle prefetch total of the first visit (285.6 KB) has no budget.
+3. The baseline job's token (code and a `contents: write` token in one job); whether the two-job layout is wanted before the label is used again.
+4. The reader removes `meta`, `base` and `link` by pattern; a page it cannot make safe by removal is shown empty.
+5. `pnpm audit` is red until 2026-11-02T23:05Z (`fast-uri`), 2026-11-04T05:35Z (`vite`) and 2026-11-10T22:26Z (`minimatch`); no exception is recorded.
+6. The two flakes on main (above): apply the proposed fixes, or not.
+
+## Deviations from the plan
+
+The plan is frozen and was not edited. The changes of course since it was approved are each recorded in `plans/08-frontend.blockers.md` and, for the UI, in `design/DEVIATIONS.md` (179 rows, all `pending`):
+- **Contract:** the plan's header says `Contract-change: needed`; the human approved without `--contract-change`, and the additive contract went in as PR #20 (W1). CG6 (adoption operations), CG8, CG9 and CG15 were not in it: the adoption wizard is deferred, the other three use the fallbacks of `plans/contract-08-web.md`.
+- **Extra paths** taken: `crates/hub/examples/web_fixture.rs`, `.github/workflows/web-e2e.yml`, `docs/threat-model.md`, `crates/xtask/tests/budgets_registry.rs`, `perf/budgets.toml` (the plan's five). Nothing in a contract path was touched in this step or in the bump commit.
+- **Monaco (W3)** and **masking (W5)** decisions above; **the optimistic-update lint exception** (one helper, one named override); **the server-state layer** in T3.
+- **CI shape:** five shards and a verdict job instead of the brief's three or four; `--no-sandbox` for the Lighthouse browser on `GITHUB_ACTIONS` and with `LK_NO_SANDBOX=1`; the bootstrap job's limit of 80 minutes. All in "FIX round 1 follow-up".
+- **The tier-1 comparison of File View 1m** masks the breadcrumb, and the File 1j pieces use the stage change; neither loosens a tolerance.
+- **`pnpm-workspace.yaml`** gained a scoped override for `undici` under `@scalar/json-magic` (commit `44d92da`); drop it when orval takes a `@scalar/json-magic` that depends on `undici` 7.30.1 or later.
+- **Not done and listed above:** the adoption wizard; the approval of the DEVIATIONS rows; `pnpm audit` clean (it waits for the three fixes to be 14 days old); the CI-only checks.
