@@ -49,6 +49,23 @@ function expectLinesAtRightTop(f: Fidelity, where: string): void {
   expect(f.within2px, `every line within 2 px of its place (${where}), worst ${f.maxDev}`).toBe(f.matched);
 }
 
+/**
+ * The fidelity of the lines once Monaco has drawn what was just done to it (an edit, a scroll). Monaco draws a change on the next animation
+ * frame, not when the call that made it returns: a sample read before that frame compares the old tops with the new model (typing a line at
+ * the top of 29 shown lines: `{ matched: 27, maxDev: 19, within2px: 0 }`, measured five times out of five; main's CI failed with exactly that
+ * once, `worst 19`, expected 27, received 0; and a scroll failed that way about one run in ten before this wait). So the sample is taken every
+ * 100 ms, at most 5 s, until every shown line is in its place, and the last sample is returned. The assertion stays the callers': lines that
+ * never get their place still fail it, with the last sample in the message.
+ */
+async function settledFidelity(page: import("@playwright/test").Page): Promise<Fidelity> {
+  let drawn = await fidelity(page);
+  for (let i = 0; i < 50 && !(drawn.matched > 15 && drawn.within2px === drawn.matched); i++) {
+    await sleep(100);
+    drawn = await fidelity(page);
+  }
+  return drawn;
+}
+
 test.describe("the editor under the production policy", () => {
   test("loads with one policy, renders, and has zero violations", async ({ page, harness, csp }) => {
     await open(page, harness.url, "editor");
@@ -64,6 +81,26 @@ test.describe("the editor under the production policy", () => {
     await expectClean(page, csp, "load");
   });
 
+  test("settledFidelity waits for the frame that draws an edit: with every frame a second late, the lines are not in place until it has run", async ({ page, harness, csp }) => {
+    await open(page, harness.url, "editor");
+    expectLinesAtRightTop(await fidelity(page), "before the edit");
+    // Monaco draws a change on the next animation frame. Here every frame it asks for comes a second late, so a sample read right after the
+    // edit (what the typing test's did on main's CI, where the poll and the sample arrive back to back) reads the old tops against the new
+    // model, every time and not one run in a hundred. What is asserted is only what the helper promises: the sample it returns is the settled one.
+    await page.evaluate(`(() => {
+      const ask = window.requestAnimationFrame.bind(window);
+      window.requestAnimationFrame = (callback) => ask(() => { setTimeout(() => callback(performance.now()), 1000); });
+      const ed = ${EDITOR};
+      ed.focus();
+      ed.setPosition({ lineNumber: 1, column: 1 });
+      ed.trigger('test', 'type', { text: 'zz: 1' });
+      ed.trigger('test', 'type', { text: '\\n' });
+      ed.trigger('test', 'type', { text: 'yy: 2' });
+    })()`);
+    expectLinesAtRightTop(await settledFidelity(page), "settled, after the late frame");
+    await expectClean(page, csp, "an edit whose frame comes late");
+  });
+
   test("typing, selection, scrolling, find and the palette", async ({ page, harness, csp }) => {
     await open(page, harness.url, "editor");
     const box = await page.evaluate(() => {
@@ -76,8 +113,10 @@ test.describe("the editor under the production policy", () => {
     await page.keyboard.press("Enter");
     await page.keyboard.type("yy: 2");
     await expect.poll(() => page.evaluate(`${EDITOR}.getModel().getLineContent(1)`)).toBe("zz: 1");
-    expect(await page.evaluate(`[...${EDITOR}.getDomNode().querySelectorAll('.view-line')].some((l) => l.textContent.replace(/\\u00a0/g, ' ').includes('zz: 1'))`), "the DOM shows what was typed").toBe(true);
-    expectLinesAtRightTop(await fidelity(page), "after typing");
+    // The last thing typed: `zz: 1` was in the DOM before the Enter (the first line read `zz: 1<its old text>`), so only this one says the
+    // DOM has caught up with the typing.
+    await expect.poll(() => page.evaluate(`[...${EDITOR}.getDomNode().querySelectorAll('.view-line')].some((l) => l.textContent.replace(/\\u00a0/g, ' ').includes('yy: 2'))`), { message: "the DOM shows what was typed" }).toBe(true);
+    expectLinesAtRightTop(await settledFidelity(page), "after typing");
 
     // The current line has a size (G0: 4 px wide without the rewrite, 823 with it).
     expect((await measure(page)).currentLineWidth).toBeGreaterThan(600);
@@ -94,12 +133,8 @@ test.describe("the editor under the production policy", () => {
     await page.evaluate(`${EDITOR}.setScrollTop(500)`);
     // Monaco draws a scroll on the next animation frame, not when setScrollTop returns: sampled in the same task, none of 29 lines is in
     // place and the worst is 500 px, the scroll itself (measured), and this spec failed that way about one run in ten. So the check waits
-    // for the frame it is about (at most 5 s), and the assertion is unchanged: lines that never get their place still fail it.
-    let drawn = await fidelity(page);
-    for (let i = 0; i < 50 && !(drawn.matched > 15 && drawn.within2px === drawn.matched); i++) {
-      await sleep(100);
-      drawn = await fidelity(page);
-    }
+    // for the frame it is about (`settledFidelity`), and the assertion is unchanged: lines that never get their place still fail it.
+    const drawn = await settledFidelity(page);
     const scrolled = await measure(page);
     expect(scrolled.viewLineDistinctTops, "lines inserted after a scroll have their top").toBe(scrolled.viewLines);
     expectLinesAtRightTop(drawn, "after scroll");
@@ -126,7 +161,7 @@ test.describe("the editor under the production policy", () => {
     for (let i = 0; i < 24; i++) {
       await page.evaluate((y) => (window as unknown as { __lab: { editor: { setScrollTop(y: number): void } } }).__lab.editor.setScrollTop(y), (i * 3571) % 70_000);
       await sleep(80);
-      const f = await fidelity(page);
+      const f = await settledFidelity(page);
       expectLinesAtRightTop(f, `sweep ${i}`);
       worst = Math.max(worst, f.maxDev);
     }
@@ -136,7 +171,7 @@ test.describe("the editor under the production policy", () => {
     await page.keyboard.press("Control+Home");
     for (let i = 0; i < 12; i++) await page.keyboard.type(`burst-line-${i}\n`, { delay: 0 });
     await sleep(300);
-    expectLinesAtRightTop(await fidelity(page), "after a typing burst");
+    expectLinesAtRightTop(await settledFidelity(page), "after a typing burst");
     await expectClean(page, csp, "4,000 lines");
   });
 
@@ -169,7 +204,7 @@ test.describe("the editor under the production policy", () => {
     await page.keyboard.press("Control+Alt+ArrowDown");
     await page.evaluate(`${EDITOR}.updateOptions({ accessibilitySupport: 'on' })`);
     await sleep(500);
-    expectLinesAtRightTop(await fidelity(page), "after the interactions");
+    expectLinesAtRightTop(await settledFidelity(page), "after the interactions");
     await expectClean(page, csp, "interactions");
   });
 
