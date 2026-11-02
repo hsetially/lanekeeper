@@ -9,3 +9,10 @@ ignoredBuiltDependencies:
 # esm/vs/base/browser/dompurify/, which this override cannot change; src/editor never reaches it (see docs/threat-model.md).
 overrides:
   dompurify: 3.4.17
+  # @scalar/json-magic (orval's OpenAPI reader) pins undici to an exact version (7.29.1 in the locked 0.15.4; no 0.15.x release
+  # pins 7.30.1 or later) and orval 8.39.0 asks for ^0.15.0, so a lockfile update cannot move that copy. undici 7.30.1 closes the
+  # eight advisories on 7.29.1 and 7.30.0 (GHSA-4qv8-2p9j-2685, GHSA-f72v-6w45-q472, GHSA-xjj6-f33q-929c, GHSA-4w7w-5xrc-9h26,
+  # GHSA-2m5v-pch6-74hx, GHSA-qrxm-fqhp-jwvm, GHSA-9fm3-97px-rjf6, GHSA-55wc-3pg8-jfw6). It was published on 2026-10-15 and is
+  # 14 days old on 2026-10-29. Scoped to that one parent: jsdom (undici ^7.25.0) takes 7.30.1 through the lockfile. Drop this entry
+  # when orval takes a @scalar/json-magic that itself depends on undici 7.30.1 or later (0.16.1 does).
+  "@scalar/json-magic>undici": 7.30.1
