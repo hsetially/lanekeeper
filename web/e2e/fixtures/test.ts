@@ -68,15 +68,30 @@ export async function pageViolations(page: Page): Promise<Array<Record<string, u
   return page.evaluate(() => (window as unknown as { __lkViolations?: Array<Record<string, unknown>> }).__lkViolations ?? []);
 }
 
-export const test = base.extend<{ dist: string; scenario: string; harness: Harness; csp: CspWatch }>({
+/** Remove every route handler of the page and of its context; those still in flight are told to ignore their errors. Never throws. */
+async function endRoutes(page: Page): Promise<void> {
+  await page.unrouteAll({ behavior: "ignoreErrors" }).catch(() => undefined);
+  await page.context().unrouteAll({ behavior: "ignoreErrors" }).catch(() => undefined);
+}
+
+export const test = base.extend<{ dist: string; scenario: string; harness: Harness; csp: CspWatch; routesEnd: undefined }>({
   // Which build the harness serves (`dist`, or `dist-perf` with the test pages) and which mock scenario starts.
   dist: ["dist", { option: true }],
   scenario: ["viewer", { option: true }],
-  harness: async ({ dist, scenario }, use) => {
+  // Depends on `page` (every test has one: the `csp` fixture needs it), so that it tears down before the page and the context do.
+  harness: async ({ dist, scenario, page }, use) => {
     const harness = await startHarness({ dist, scenario });
     try {
       await use(harness);
     } finally {
+      // A route handler lives as long as its page, and one that calls `route.fetch()` can still be inside it when the test body ends (the
+      // page asks once more just before the end). If the harness closed its connections first, the handler would throw `route.fetch: read
+      // ECONNRESET` (or `aborted`); if the context closed first, `apiResponse.json: Response has been disposed`; and the throw becomes the
+      // test's failure, which it did on main's last `web-e2e` run (e5ed17e) and about one run in fifty here. So the handlers go first, and
+      // the ones in flight are told to ignore their errors (`behavior: "wait"` waits for requests that a test leaves unanswered on purpose,
+      // so it never finishes). The test body is untouched, so what a test asserts is what it asserted before; the teardown itself is
+      // proved by e2e/harness/teardown.spec.ts.
+      await endRoutes(page);
       await harness.close();
     }
   },
@@ -85,6 +100,14 @@ export const test = base.extend<{ dist: string; scenario: string; harness: Harne
       const watch = new CspWatch();
       await watchCsp(page, watch);
       await use(watch);
+    },
+    { auto: true },
+  ],
+  // The same at the end of a test that never asked for the harness (the harness fixture does it first for the others).
+  routesEnd: [
+    async ({ page }, use) => {
+      await use(undefined);
+      await endRoutes(page);
     },
     { auto: true },
   ],
