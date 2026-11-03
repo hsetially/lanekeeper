@@ -11,7 +11,10 @@ ignoredBuiltDependencies:
 # that osv-scanner reports (B19, osv-scanner.toml) are fixed in 7.30.1, published on 2026-10-15 and 14 days old on 2026-10-29.
 # zod 4 reaches web/ through orval (@orval/zod, @scalar/types) and eslint-plugin-react-hooks, all devDependencies. The zod finding of B19 is
 # fixed in 4.6.6, published on 2026-10-11. zod 3.25.76 is pinned exactly by chromium-bidi (under lighthouse) and is left alone.
+# fast-uri is reached through ajv 8.20.0 (orval, lighthouse and web/ itself). The fast-uri finding of B19 is fixed in 3.1.9, published on
+# 2026-10-19 and 14 days old since 2026-11-02. ajv's range stays on the 3.x line, so this pin does not move it to 4.x.
 overrides:
   dompurify: 3.4.17
   undici: 7.30.1
   zod@^4: 4.6.6
+  fast-uri: 3.1.9
